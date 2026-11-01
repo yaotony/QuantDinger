@@ -256,7 +256,14 @@
           "slippage":         { "type": "number", "nullable": true },
           "leverageEnabled":  { "type": "boolean", "default": false },
           "leverage":         { "type": "number", "default": 1 },
-          "params":           { "type": "object" }
+          "params":           { "type": "object" },
+          "instrumentRulesSnapshotId": { "type": "string", "description": "Optional historical instrument-rules snapshot id to reuse for Crypto runs" },
+          "fundingMode":      {
+            "type": "string",
+            "enum": ["not_modeled", "historical_rates"],
+            "default": "not_modeled",
+            "description": "Perpetual-swap funding simulation. not_modeled (default) keeps results unchanged. historical_rates charges stored Binance USD-M funding settlements (backfilled on demand) on open swap positions at each settlement bar close; missing settlements count as zero and are listed in result.funding.missingPeriods. Other exchanges are reported as not modeled."
+          }
         }
       },
       "StrategyDeploymentRequest": {

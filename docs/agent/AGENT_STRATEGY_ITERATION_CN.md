@@ -145,13 +145,16 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
-可用欄位只有 `code`、`startDate`、`endDate`、`initialCapital`、`commission`、`slippage`、`leverageEnabled`、`leverage`、`params`、`instrumentRulesSnapshotId`；其他欄位會回 HTTP 400。送出成功回 HTTP 202，內含 `data.job_id` 與 `status: "queued"`。
+可用欄位只有 `code`、`startDate`、`endDate`、`initialCapital`、`commission`、`slippage`、`leverageEnabled`、`leverage`、`params`、`instrumentRulesSnapshotId`、`fundingMode`；其他欄位會回 HTTP 400。送出成功回 HTTP 202，內含 `data.job_id` 與 `status: "queued"`。
+
+`fundingMode` 預設為 `not_modeled`。Binance USDⓈ-M 永續合約（`@binance:swap`）策略若持倉會跨過資金費結算，送 `"fundingMode": "historical_rates"`：每筆交易會帶 `funding_fee`（正值表示支付），`profit` 已扣除資金費；摘要多出 `totalFundingFee`；`result.funding` 列出 `missingPeriods` 與 `warnings`（缺少的結算點以 0 計算）。其他交易所標示為不計入。其他值回 HTTP 400 `strategyV2.fundingModeUnsupported:<value>`。完整規則見 [策略開發指南：永續合約資金費](../trading/STRATEGY_DEV_GUIDE_CN.md)。
 
 MCP 對應寫法：
 
 ```text
 submit_backtest(code=..., start_date="2024-01-01", end_date="2024-12-31",
                 initial_capital=10000, params={...}, idempotency_key="lab-bt-ema-v1-2024")
+# 永續合約策略：加上 funding_mode="historical_rates"
 ```
 
 同時執行的 job 有上限：每個租戶預設 4 個、每個 Token 預設 2 個。收到 HTTP 429 時，先等執行中的 job 結束再送。

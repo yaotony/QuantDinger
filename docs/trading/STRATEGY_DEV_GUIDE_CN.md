@@ -888,9 +888,12 @@ def rebalance(context, data):
   "leverageEnabled": false,
   "leverage": 1,
   "params": {},
+  "fundingMode": "not_modeled",
   "persist": true
 }
 ~~~
+
+<code>fundingMode</code> 可省略，默认为 <code>not_modeled</code>；见下文“永续合约资金费”。
 
 还可以传 <code>sourceId</code> 或 <code>strategyId</code> 读取已保存源码。市场、标的和周期不能从请求覆盖。
 
@@ -953,9 +956,44 @@ def rebalance(context, data):
 
 - 每次成交都会收取手续费。完整往返交易的已实现利润会同时扣除分摊后的开仓手续费和平仓手续费。
 - 滑点按照结果中的执行假设应用。
-- Strategy API V2 回测当前**不模拟 Crypto 资金费用**。应确认 <code>executionAssumptions.fundingMode == "not_modeled"</code>；杠杆 swap 回测不能不估算资金费就直接与实盘净利润比较。
+- Crypto 资金费用**默认不计入**（<code>executionAssumptions.fundingMode == "not_modeled"</code>）。把 <code>fundingMode</code> 设为 <code>historical_rates</code> 可计入永续合约历史资金费（见下文）；未开启时，杠杆 swap 回测不能直接与实盘净利润比较。
 - 实盘使用交易所返回的成交手续费，并在可用时同步资金费/账户账单。手续费可能以报价币、基础币或平台折扣币收取，因此换算与对账可能晚于成交。
 - 应测试多组手续费和滑点假设。成本轻微上升就失去优势的策略不够稳健。
+
+### 永续合约资金费
+
+回测可以计入永续合约资金费：在回测中心请求、Agent Gateway <code>POST /api/agent/v1/backtest/run</code> 请求体中设置 <code>"fundingMode": "historical_rates"</code>，或在 MCP 调用 <code>submit_backtest(funding_mode="historical_rates")</code>。默认值 <code>not_modeled</code> 下所有结果字段与以前完全相同。此设置只影响回测；实盘与模拟盘的资金费由交易所扣收。
+
+数据来源与存储：
+
+- 目前只支持 **Binance USDⓈ-M 永续合约**（<code>/fapi/v1/fundingRate</code>）：<code>market_type == "swap"</code>、报价币为 USDT 或 USDC、交易所为 <code>binance</code>（或未指定交易所且默认交易所为 Binance）的 Crypto 标的。现货与非加密标的为 <code>not_applicable</code>；其他交易所的 swap 标示为 <code>unsupported_exchange</code>（币本位交易对为 <code>unsupported_product</code>），不计资金费。
+- 结算记录存于 PostgreSQL（<code>qd_perpetual_funding_rates</code>，按交易所、交易对、结算时间去重）。每次回测先读取已存区间，只向交易所补抓缺少的时段并保存，然后再模拟。
+
+计算规则：
+
+- 结算时间以数据中的时间戳为准，不假设固定 8 小时，因此 4 小时或 1 小时结算的交易对同样适用。
+- 结算点计入跨度 <code>(K 线开盘, K 线开盘 + 周期]</code> 包含它的驱动周期 K 线（行情有缺口时延伸到下一根已处理的 K 线），以该 K 线收盘价近似标记价格：<code>资金费 = 带正负号的持仓数量 × K 线收盘价 × 资金费率</code>。
+- 结果为正表示支付，为负表示收取：正费率时多头支付、空头收取；负费率则相反。只对该 K 线收盘时仍持有的仓位收取。
+- 持仓期间累计的资金费在平仓时按数量比例分摊，与开仓手续费相同。
+- 缺少的结算点按 0 计算，回测不会因缺资金费数据而失败。
+
+开启后的结果字段：
+
+| 字段 | 含义 |
+|---|---|
+| <code>closedTrades[].funding_fee</code> | 分摊到该笔交易的资金费；为正表示支付。 |
+| <code>closedTrades[].profit_before_funding</code> | 扣资金费前的净利润。<code>profit</code> 已扣除 <code>funding_fee</code>，因此 <code>r_multiple</code>、<code>expectancyAfterCosts</code> 与 <code>profit_before_costs</code>（只加回手续费和滑点）都包含资金费。 |
+| <code>totalFundingFee</code> | 全程净资金费（支付减收取）；<code>finalEquity</code>、<code>totalProfit</code> 与权益曲线均已扣除。 |
+| <code>fundingFeePaid</code> / <code>fundingFeeReceived</code> | 支付与收取的总额。 |
+| <code>closedTradeFundingFee</code> / <code>openPositionFundingFee</code> | 已平仓交易与结束时仍持有仓位各自的资金费。 |
+| <code>fundingEventCount</code> / <code>fundingEvents</code> | 每一次实际收付：时间、K 线、仓位、方向、数量、价格、名义价值、费率、金额。历史存储最多保留 1500 笔抽样，总额仍涵盖全部。 |
+| <code>attribution.symbols[].fundingFee</code> | 各仓位的资金费；<code>netContribution</code> 已扣除。 |
+| <code>audit.fundingLedger</code> | 计入现金对账的资金费。 |
+| <code>funding</code> | 报告：<code>mode</code>、<code>source</code>、<code>priceBasis</code>、各标的 <code>status</code>、<code>records</code>、<code>missingPeriods</code>、<code>missingSettlementCount</code>、可能出现的 <code>fetchErrors</code>，以及全程 <code>missingPeriodCount</code> / <code>missingSettlementCount</code> 与 <code>warnings</code>。 |
+
+开启时 <code>executionAssumptions.fundingMode</code> 反映实际模式，并带有 <code>fundingPriceBasis == "settlement_bar_close"</code> 与 <code>fundingMissingDataPolicy == "zero_rate"</code>。
+
+缺数据：<code>missingPeriods</code> 每一项的 <code>start</code>/<code>end</code> 为不含端点的边界（相邻的已知结算点或区间端点），<code>reason</code> 为 <code>range_start</code>、<code>gap</code>、<code>range_end</code> 或 <code>no_funding_data</code>，<code>missingCount</code> 为按当地结算周期推算应有的结算次数（完全没有数据时为 <code>null</code>，此时 <code>missingSettlementCountComplete</code> 为 <code>false</code>）。间隔超过相邻较大间隔的 1.5 倍才算缺口，因此结算周期改变（例如 8 小时改为 4 小时）不算缺口。<code>warnings</code> 会带有 <code>strategyV2.fundingDataMissing:&lt;标的&gt;</code>、<code>strategyV2.fundingNotModeled:&lt;标的&gt;:&lt;状态&gt;</code> 与 <code>strategyV2.fundingBackfillFailed:&lt;标的&gt;</code> 代码。缺口较大时，应依持仓方向把结果视为偏乐观或偏悲观。
 
 回测中心还支持因子研究。回测可按系统设置扣除积分；执行失败会自动退款。前端请求超时不等于服务端任务失败，重复提交前应先检查回测历史。
 
@@ -1131,7 +1169,7 @@ DCA 规则：
 - [ ] 已明确调度时区和跨重启状态要求。
 - [ ] 已验证 manifest。
 - [ ] 已检查 orderLedger，而不只看收益曲线。
-- [ ] 已计入开仓和平仓手续费，并在当前回测之外单独评估 swap 资金费。
+- [ ] 已计入开仓和平仓手续费；swap 资金费已用 <code>fundingMode: "historical_rates"</code> 模拟（并检查缺数据时段），或已另行评估。
 - [ ] 已用不同时间区间和成本假设做稳健性测试。
 - [ ] 已有至少一次成功回测后再发布。
 - [ ] live 前先确认凭证、市场、余额、最小交易单位和通知。

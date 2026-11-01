@@ -10,6 +10,7 @@ from app.services.backtest_execution import (
     default_slippage_if_missing,
 )
 from app.services.strategy_v2 import StrategyV2BacktestService
+from app.services.strategy_v2.funding import normalize_funding_mode
 
 
 _backtest = StrategyV2BacktestService()
@@ -74,6 +75,7 @@ def run_backtest_job(
         ).strip(),
         persist=bool(payload.get("persist", True)),
         on_progress=report_progress if on_progress else None,
+        funding_mode=normalize_funding_mode(payload.get("fundingMode")),
     )
     if on_progress and not emitted_progress:
         on_progress({"phase": "finalizing", "percent": 95})

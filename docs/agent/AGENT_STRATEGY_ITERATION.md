@@ -145,13 +145,16 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
-Accepted fields are `code`, `startDate`, `endDate`, `initialCapital`, `commission`, `slippage`, `leverageEnabled`, `leverage`, `params`, and `instrumentRulesSnapshotId`; anything else is rejected with HTTP 400. A successful submission returns HTTP 202 with `data.job_id` and `status: "queued"`.
+Accepted fields are `code`, `startDate`, `endDate`, `initialCapital`, `commission`, `slippage`, `leverageEnabled`, `leverage`, `params`, `instrumentRulesSnapshotId`, and `fundingMode`; anything else is rejected with HTTP 400. A successful submission returns HTTP 202 with `data.job_id` and `status: "queued"`.
+
+`fundingMode` defaults to `not_modeled`. For Binance USDⓈ-M perpetual (`@binance:swap`) strategies held across funding settlements, send `"fundingMode": "historical_rates"`: trades then carry `funding_fee` (positive = paid) with `profit` already net of it, the summary adds `totalFundingFee`, and `result.funding` lists `missingPeriods` and `warnings` (missing settlements count as zero). Other exchanges are reported as not modeled. Any other value returns HTTP 400 `strategyV2.fundingModeUnsupported:<value>`. Full rules: [Strategy guide: perpetual funding](../trading/STRATEGY_DEV_GUIDE.md#perpetual-funding).
 
 MCP equivalent:
 
 ```text
 submit_backtest(code=..., start_date="2024-01-01", end_date="2024-12-31",
                 initial_capital=10000, params={...}, idempotency_key="lab-bt-ema-v1-2024")
+# Perpetual strategies: add funding_mode="historical_rates"
 ```
 
 Concurrency is capped per tenant (default 4) and per token (default 2). On HTTP 429, wait for running jobs to finish before submitting more.

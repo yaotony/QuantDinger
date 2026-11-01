@@ -25,6 +25,7 @@ from app.services.strategy_v2 import (
     StrategyBacktestRepository,
     StrategyV2BacktestService,
 )
+from app.services.strategy_v2.funding import normalize_funding_mode
 from app.utils.auth import login_required
 from app.utils.logger import get_logger
 from app.utils import agent_jobs
@@ -107,6 +108,7 @@ def _prepare_run(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
         "instrument_rules_snapshot_id": str(
             payload.get("instrumentRulesSnapshotId") or ""
         ).strip(),
+        "funding_mode": normalize_funding_mode(payload.get("fundingMode")),
     }
 
 
@@ -183,6 +185,7 @@ def _job_payload(prepared: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         "leverage": prepared["leverage"],
         "params": prepared["params"],
         "instrumentRulesSnapshotId": prepared["instrument_rules_snapshot_id"],
+        "fundingMode": prepared["funding_mode"],
         "persist": bool(payload.get("persist", True)),
         "sourceId": prepared["source_id"],
         "strategyId": prepared["strategy_id"],

@@ -886,9 +886,12 @@ Core backtest request:
   "leverageEnabled": false,
   "leverage": 1,
   "params": {},
+  "fundingMode": "not_modeled",
   "persist": true
 }
 ~~~
+
+<code>fundingMode</code> is optional and defaults to <code>not_modeled</code>; see [Perpetual funding](#perpetual-funding).
 
 You may supply <code>sourceId</code> or <code>strategyId</code> to load saved source. The request cannot override source markets, instruments, or frequency.
 
@@ -951,9 +954,44 @@ Older stored runs have no diagnostic fields; rerun the backtest to obtain them.
 
 - Commission is charged on every fill. A completed round trip deducts both allocated entry commission and exit commission from realized profit.
 - Slippage is applied according to the reported execution assumptions.
-- Crypto funding payments are currently **not modeled in Strategy API V2 backtests**. Confirm <code>executionAssumptions.fundingMode == "not_modeled"</code>; do not compare a leveraged swap backtest directly with live net profit without estimating funding separately.
+- Crypto funding payments are **not modeled by default** (<code>executionAssumptions.fundingMode == "not_modeled"</code>). Set <code>fundingMode</code> to <code>historical_rates</code> to charge historical perpetual funding (see below); otherwise do not compare a leveraged swap backtest directly with live net profit.
 - Live trading uses venue-reported fill fees and, where available, funding/account-ledger records. A fee may be charged in quote, base, or a discount token, so conversion and reconciliation can lag the fill.
 - Test a range of commission and slippage assumptions. A strategy whose edge disappears under a small cost increase is not robust.
+
+### Perpetual funding
+
+Backtests can charge perpetual-swap funding with <code>"fundingMode": "historical_rates"</code> in the Backtest Center request, the Agent Gateway <code>POST /api/agent/v1/backtest/run</code> body, or the MCP <code>submit_backtest(funding_mode="historical_rates")</code> argument. The default <code>not_modeled</code> leaves every result field exactly as before. This is a backtest-only setting; live and paper accounts are charged by the exchange.
+
+Data source and storage:
+
+- Only **Binance USDⓈ-M perpetuals** (<code>/fapi/v1/fundingRate</code>) are supported: Crypto instruments with <code>market_type == "swap"</code>, a USDT or USDC quote, and the <code>binance</code> venue (or no venue, when Binance is the default exchange). Spot and non-crypto instruments are <code>not_applicable</code>; swaps on other exchanges are reported as <code>unsupported_exchange</code> (COIN-M pairs as <code>unsupported_product</code>) and are not charged.
+- Settlements are stored in PostgreSQL (<code>qd_perpetual_funding_rates</code>, unique per exchange, symbol, and settlement time). Each run reads the stored range first, fetches only the missing windows from the exchange, saves them, and then simulates.
+
+Calculation rules:
+
+- Settlement times come from the data; no fixed eight-hour interval is assumed, so four-hour and one-hour symbols work unchanged.
+- A settlement is charged to the driving bar whose span <code>(bar open, bar open + bar interval]</code> contains it (when market data has a gap, up to the next processed bar). The payment uses that bar's close as an approximation of the mark price: <code>payment = signed quantity × bar close × funding rate</code>.
+- A positive payment is paid and a negative one is received: longs pay and shorts receive a positive rate; a negative rate reverses both. Only positions open at the bar close are charged.
+- Funding accrued while an entry is open is allocated to closes pro rata, like entry commission.
+- Missing settlements count as zero; the run never fails because funding data is missing.
+
+Results when enabled:
+
+| Field | Meaning |
+|---|---|
+| <code>closedTrades[].funding_fee</code> | Funding allocated to the trade; positive means paid. |
+| <code>closedTrades[].profit_before_funding</code> | Net profit before funding. <code>profit</code> is already net of <code>funding_fee</code>, so <code>r_multiple</code>, <code>expectancyAfterCosts</code>, and <code>profit_before_costs</code> (which adds back commission and slippage only) include funding. |
+| <code>totalFundingFee</code> | Net funding over the run (paid minus received); <code>finalEquity</code>, <code>totalProfit</code>, and the equity curve are already net of it. |
+| <code>fundingFeePaid</code> / <code>fundingFeeReceived</code> | Gross paid and received amounts. |
+| <code>closedTradeFundingFee</code> / <code>openPositionFundingFee</code> | Split between closed trades and positions still open at the end. |
+| <code>fundingEventCount</code> / <code>fundingEvents</code> | Every settlement charged: time, bar, position, side, quantity, price, notional, rate, payment. History storage keeps at most 1500 sampled events; totals cover all of them. |
+| <code>attribution.symbols[].fundingFee</code> | Funding per position; <code>netContribution</code> is net of it. |
+| <code>audit.fundingLedger</code> | Funding included in the cash reconciliation. |
+| <code>funding</code> | Report: <code>mode</code>, <code>source</code>, <code>priceBasis</code>, per-instrument <code>status</code>, <code>records</code>, <code>missingPeriods</code>, <code>missingSettlementCount</code>, any <code>fetchErrors</code>, and run totals <code>missingPeriodCount</code> / <code>missingSettlementCount</code> plus <code>warnings</code>. |
+
+<code>executionAssumptions.fundingMode</code> reports the mode actually used, with <code>fundingPriceBasis == "settlement_bar_close"</code> and <code>fundingMissingDataPolicy == "zero_rate"</code> when enabled.
+
+Missing data: each <code>missingPeriods</code> item has exclusive <code>start</code>/<code>end</code> bounds (the neighbouring known settlements or the range edges), a <code>reason</code> (<code>range_start</code>, <code>gap</code>, <code>range_end</code>, or <code>no_funding_data</code>), and <code>missingCount</code>, the settlements the local cadence expects (<code>null</code> when no data exists at all, in which case <code>missingSettlementCountComplete</code> is <code>false</code>). A gap is reported when the spacing exceeds 1.5× the larger neighbouring interval, so a cadence change (for example eight to four hours) is not a gap. <code>warnings</code> carries <code>strategyV2.fundingDataMissing:&lt;instrument&gt;</code>, <code>strategyV2.fundingNotModeled:&lt;instrument&gt;:&lt;status&gt;</code>, and <code>strategyV2.fundingBackfillFailed:&lt;instrument&gt;</code> codes. Treat a run with large missing periods as optimistic or pessimistic depending on the side held.
 
 The backtest center also supports factor research. Backtests may consume a system-configured credit amount; a failed execution is refunded automatically. UI request timeouts do not prove the server job failed—check backtest history before submitting a duplicate run.
 
@@ -1127,7 +1165,7 @@ Martingale rules:
 - [ ] Schedule timezone and cross-restart state requirements are explicit.
 - [ ] The manifest verifies successfully.
 - [ ] The order ledger is reviewed, not only the equity curve.
-- [ ] Both entry and exit fees are included; swap funding is evaluated separately from the current backtest.
+- [ ] Both entry and exit fees are included; swap funding is either simulated with <code>fundingMode: "historical_rates"</code> (and its missing periods reviewed) or evaluated separately.
 - [ ] Robustness is tested across periods and cost assumptions.
 - [ ] At least one successful backtest exists before publication.
 - [ ] Credentials, market, balance, lot size, and notifications are checked before live use.

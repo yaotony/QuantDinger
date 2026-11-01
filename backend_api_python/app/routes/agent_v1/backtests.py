@@ -11,6 +11,7 @@ from app.services.backtest_jobs import parse_backtest_date, run_backtest_job
 from app.services.backtest_limits import BacktestRangeLimitError
 from app.services.billing_service import BillingError
 from app.services.strategy_v2 import StrategyV2BacktestService
+from app.services.strategy_v2.funding import FUNDING_MODES, normalize_funding_mode
 from app.services.strategy_v2.service import precheck_backtest_range
 from app.utils.agent_auth import (
     SCOPE_B, agent_required, current_token, current_user_id,
@@ -31,7 +32,7 @@ _backtest = StrategyV2BacktestService()
 _BACKTEST_FIELDS = {
     "code", "startDate", "endDate", "initialCapital", "commission", "slippage",
     "leverageEnabled", "leverage", "params",
-    "instrumentRulesSnapshotId",
+    "instrumentRulesSnapshotId", "fundingMode",
 }
 
 
@@ -65,6 +66,10 @@ def _validate_request(body: dict) -> tuple[Any, Any]:
     params = body.get("params", {})
     if not isinstance(params, dict):
         return None, error(400, "params must be an object")
+    try:
+        normalize_funding_mode(body.get("fundingMode"))
+    except ValueError as exc:
+        return None, error(400, str(exc), details={"allowed": list(FUNDING_MODES)})
     try:
         if float(body.get("initialCapital") or 10000) <= 0:
             raise ValueError

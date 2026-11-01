@@ -185,6 +185,22 @@ def test_agent_openapi_documents_backtest_range_limit_contract():
     assert set(schemas["JobFailure"]["required"]) == {"code", "message", "details"}
 
 
+def test_agent_openapi_backtest_request_matches_accepted_fields():
+    from app.routes.agent_v1.backtests import _BACKTEST_FIELDS
+    from app.services.strategy_v2.funding import FUNDING_MODE_NOT_MODELED, FUNDING_MODES
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    request_schema = spec["components"]["schemas"]["BacktestRequest"]
+    assert request_schema["additionalProperties"] is False
+    assert set(request_schema["properties"]) == _BACKTEST_FIELDS
+
+    funding = request_schema["properties"]["fundingMode"]
+    assert funding["enum"] == list(FUNDING_MODES)
+    assert funding["default"] == FUNDING_MODE_NOT_MODELED
+
+
 def test_agent_openapi_documents_data_coverage_contract():
     from datetime import datetime
 
