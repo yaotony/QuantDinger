@@ -68,6 +68,7 @@ MCP_TOOL_NAMES = (
     "submit_backtest",
     "list_backtest_runs",
     "get_backtest_run",
+    "get_backtest_report",
     "get_optimization_parameter_space",
     "submit_parameter_sweep",
     "submit_walk_forward",
@@ -283,7 +284,8 @@ mcp = FastMCP(
         "accepts Strategy API V2 Python code, or a saved source_id (optionally "
         "source_version; latest when omitted) so iterations need not resend code. "
         "Compare iterations with list_backtest_runs (summary metrics) and "
-        "get_backtest_run (full result). "
+        "get_backtest_run (full result); get_backtest_report returns the same "
+        "Markdown report users download from the Backtest Center. "
         "To optimize parameters of a saved source, read "
         "get_optimization_parameter_space, then submit_parameter_sweep or "
         "submit_walk_forward instead of looping single backtests; results "
@@ -1086,6 +1088,20 @@ def list_backtest_runs(
 def get_backtest_run(run_id: int) -> Any:
     """Read one backtest run's summary, manifest, and full stored result."""
     return _get(f"/api/agent/v1/backtest/runs/{int(run_id)}")
+
+
+@_tool
+def get_backtest_report(run_id: int, language: str = "en-US") -> Any:
+    """Read one backtest run as a Markdown report.
+
+    The report is the same document the Backtest Center download produces:
+    summary vs buy-and-hold, cost breakdown, trade diagnostics (R, expectancy,
+    holding time, MAE/MFE), execution assumptions, warnings and strategy
+    version. Missing fields read "No data". ``language`` is ``en-US``,
+    ``zh-CN`` or ``zh-TW``. The text is in ``data.markdown``.
+    """
+    params = {"language": str(language or "en-US").strip() or "en-US"}
+    return _get(f"/api/agent/v1/backtest/runs/{int(run_id)}/report", params=params)
 
 
 @_tool

@@ -22,7 +22,7 @@ Related references:
 | 3. Save or update the source | `POST /strategy-sources`, `PATCH /strategy-sources/{id}` | `save_strategy_source` | W |
 | 4. Submit a backtest | `POST /backtest/run` | `submit_backtest` | B |
 | 5. Wait for the job | `GET /jobs/{job_id}` or `GET /jobs/{job_id}/stream` | `wait_for_job`, `stream_job_until_done` | R |
-| 6. Inspect history | `GET /backtest/runs`, `GET /backtest/runs/{run_id}`, `GET /strategy-sources/{id}/versions` | `list_backtest_runs`, `get_backtest_run`, `list_strategy_source_versions` | R |
+| 6. Inspect history | `GET /backtest/runs`, `GET /backtest/runs/{run_id}`, `GET /backtest/runs/{run_id}/report`, `GET /strategy-sources/{id}/versions` | `list_backtest_runs`, `get_backtest_run`, `get_backtest_report`, `list_strategy_source_versions` | R |
 | 7. Optimize parameters | `GET /optimization/parameter-space`, `POST /optimization/sweep`, `POST /optimization/walk-forward` | `get_optimization_parameter_space`, `submit_parameter_sweep`, `submit_walk_forward` | R / B |
 
 All HTTP paths below are relative to `/api/agent/v1`. Every `POST`/`PATCH` that needs W, B, N, or T scope requires a unique `Idempotency-Key` header (at most 120 characters). Reuse a key only to retry the exact same request.
@@ -224,6 +224,21 @@ Iteration rules:
 | `totalFees` | Commission paid, account currency (`null` for runs saved before fee totals were stored) |
 
 Compare runs of one `sourceId` side by side; equal `codeHash` values mean identical code, so the difference comes from `params` or the range. Open a candidate with `GET /backtest/runs/{run_id}` (MCP `get_backtest_run`) to read the full `result` and `manifest`. Both endpoints only need R scope and never return another tenant's runs.
+
+### Report a run to the user
+
+`GET /backtest/runs/{run_id}/report?language=en-US` (MCP `get_backtest_report`) returns `data.markdown`, a Markdown report built from the stored result. It is the same document a logged-in user downloads from the Backtest Center (`GET /api/backtest/report?runId=...`), so the agent and the web page present the same figures. `language` is `en-US` (default), `zh-CN`, or `zh-TW`. The report has these sections:
+
+| Section | Contents |
+| --- | --- |
+| Summary | Period, market, symbol, timeframe, initial capital, final equity, total and annualized return, buy-and-hold return and excess return, max drawdown, Sharpe, Sortino, Calmar |
+| Cost breakdown | Commission, slippage, funding (shown as not modeled until funding is simulated), total trading cost, gross profit and loss before costs, cost as a share of each |
+| Trade diagnostics | Closed trades, win rate, profit factor, average R, expectancy per trade before and after costs, holding-time distribution, MAE/MFE |
+| Execution assumptions | Commission and slippage rates, leverage, fill, intrabar, bar-close and stop/take-profit rules, funding, data kind, and the simplified model's limitations |
+| Warnings | Non-market data, missing or partial benchmark coverage, skipped symbols, no executions, liquidation, sampled trade history, runs without diagnostics, unmodeled funding on perpetuals |
+| Strategy version | Strategy name, `sourceId`, source version when the run recorded it, strategy id, code hash, engine version, parameters |
+
+A field the run did not record reads "No data" instead of failing the report, so runs saved before trade diagnostics still render. Quote the report rather than restating figures from memory.
 
 ## Step 7: Optimize parameters without overfitting
 

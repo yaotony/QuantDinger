@@ -50,6 +50,7 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 | `create_strategy`, `update_strategy`, `list_strategies`, `get_strategy` | R/W | Strategy API V2 deployments |
 | `submit_backtest` | B | Strategy API V2 backtest job |
 | `list_backtest_runs`, `get_backtest_run` | R | Backtest history with summary metrics (return, max drawdown, trades, win rate, total fees) and full results by `runId` |
+| `get_backtest_report` | R | Markdown report for one `runId` (summary vs buy-and-hold, costs, trade diagnostics, assumptions, warnings, strategy version); identical to the Backtest Center download |
 | `get_optimization_parameter_space`, `submit_parameter_sweep`, `submit_walk_forward` | R/B | Declared parameter space, and bounded parameter sweep / walk-forward jobs with separate in-sample and out-of-sample results |
 | `list_jobs`, `get_job`, `wait_for_job`, `stream_job_until_done`, `cancel_job` | R/B | Bounded jobs and confirmed cancellation |
 | `runtime_overview`, `stop_strategy` | R/T | Runtime inspection and confirmed stop |
@@ -114,7 +115,7 @@ submit_backtest(
 
 Market, symbol, and timeframe are not backtest parameters. They come from the compiled strategy manifest. Use `wait_for_job` or `stream_job_until_done` to obtain the result.
 
-The finished job's `result.runId` identifies the saved history record. Compare iterations with `list_backtest_runs` (filter by `source_id`, `strategy_id`, `symbol`, `market`, `timeframe`, `created_from`/`created_to`; page with `limit`/`offset` while `pagination.hasMore` is true). Each item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`. Read one run's full result with `get_backtest_run(run_id)`.
+The finished job's `result.runId` identifies the saved history record. Compare iterations with `list_backtest_runs` (filter by `source_id`, `strategy_id`, `symbol`, `market`, `timeframe`, `created_from`/`created_to`; page with `limit`/`offset` while `pagination.hasMore` is true). Each item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`. Read one run's full result with `get_backtest_run(run_id)`, or the Markdown report shown to users with `get_backtest_report(run_id, language="en-US")` (`zh-CN` and `zh-TW` are also available; the text is in `data.markdown`).
 
 Optimize a saved source's parameters with a job instead of looping `submit_backtest`. Read the declared ranges and limits first; every `parameter_space` entry must stay inside them:
 

@@ -147,6 +147,18 @@
           }
         ]
       },
+      "BacktestReport": {
+        "type": "object",
+        "description": "Markdown report rendered from one persisted run. The Backtest Center download (`GET /api/backtest/report`) returns the identical document for the same run and language.",
+        "required": ["runId", "language", "format", "filename", "markdown"],
+        "properties": {
+          "runId":    { "type": "integer" },
+          "language": { "type": "string", "enum": ["en-US", "zh-CN", "zh-TW"] },
+          "format":   { "type": "string", "enum": ["markdown"] },
+          "filename": { "type": "string", "description": "Suggested file name, `backtest-run-{runId}.md`" },
+          "markdown": { "type": "string", "description": "Sections: summary (period, market, timeframe, capital, final equity, total return vs buy-and-hold, max drawdown, Sharpe/Sortino/Calmar), cost breakdown (commission, slippage, funding, cost share of gross profit and loss), trade diagnostics (win rate, average R, expectancy before and after costs, holding-time distribution, MAE/MFE), execution assumptions and model limitations, warnings (data gaps, benchmark coverage, sampled history), and strategy version (sourceId, version when recorded, code hash). Fields the run did not record read as the localized \"no data\" text." }
+        }
+      },
       "BacktestRunPage": {
         "type": "object",
         "properties": {
@@ -1021,6 +1033,34 @@
               }
             }
           },
+          "404": { "description": "Not found in this tenant" }
+        }
+      }
+    },
+    "/api/agent/v1/backtest/runs/{run_id}/report": {
+      "get": {
+        "summary": "Get one backtest run as a Markdown report",
+        "description": "Renders the tenant-owned run as the shared Markdown backtest report (the same document the Backtest Center download returns). Every figure comes from the stored result; runs persisted before trade diagnostics still render, with the missing sections reading \"no data\". Runs owned by another tenant return 404.",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "path", "name": "run_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "query", "name": "language", "required": false, "schema": { "type": "string", "enum": ["en-US", "zh-CN", "zh-TW"], "default": "en-US" }, "description": "Report language; `zh`, `en`, `zh_TW` style aliases are accepted" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK; `data` is a `BacktestReport`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/Envelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/BacktestReport" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "description": "Unsupported language" },
           "404": { "description": "Not found in this tenant" }
         }
       }

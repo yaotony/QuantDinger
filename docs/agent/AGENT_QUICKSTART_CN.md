@@ -56,6 +56,7 @@ curl -X POST http://localhost:8888/api/agent/v1/strategies \
 
 - `GET /backtest/runs`：按时间倒序列出本租户的回测，可按 `sourceId`、`strategyId`、`symbol`、`market`、`timeframe`、`createdFrom`/`createdTo`（`YYYY-MM-DD` 或 ISO-8601）筛选，用 `limit`/`offset` 分页，`pagination.hasMore` 与 `nextOffset` 指示是否还有下一页。每笔附 `metrics`：`totalReturn`、`maxDrawdown`、`totalTrades`、`winRate`、`totalFees`。
 - `GET /backtest/runs/{run_id}`：读取单笔回测的完整结果（含 `manifest` 与 `result`）。
+- `GET /backtest/runs/{run_id}/report?language=zh-CN`：读取 Markdown 回测报告（`data.markdown`），`language` 可用 `en-US`（默认）、`zh-CN`、`zh-TW`。内容与 Backtest Center 下载的报告相同，各区块说明见 [向使用者報告回測結果](AGENT_STRATEGY_ITERATION_CN.md#向使用者報告回測結果)。
 
 旧记录未保存手续费合计时，列表中的 `totalFees` 为 `null`，单笔读取会改用 `result.totalCommission`。其他租户的 `runId` 返回 404。
 

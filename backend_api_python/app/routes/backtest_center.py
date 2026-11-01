@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from flask import g, jsonify, request
+from flask import Response
 
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.routes.strategy_services import get_strategy_service
@@ -25,7 +26,14 @@ from app.services.strategy_v2 import (
     StrategyBacktestRepository,
     StrategyV2BacktestService,
 )
+from app.services.strategy_v2.backtest_report import (
+    DEFAULT_REPORT_LANGUAGE,
+    render_backtest_report,
+    report_filename,
+    resolve_report_language,
+)
 from app.utils.auth import login_required
+from app.utils.language import detect_request_language
 from app.utils.logger import get_logger
 from app.utils import agent_jobs
 
@@ -499,6 +507,50 @@ def get_strategy_backtest():
     except Exception as exc:
         logger.exception("Backtest lookup failed")
         return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+
+
+@backtest_center_blp.route("/report", methods=["GET"])
+@backtest_center_blp.doc(
+    summary="Download a backtest run as a Markdown report",
+    description=(
+        "Returns the logged-in user's run identified by runId as a Markdown "
+        "attachment. The content is identical to the Agent Gateway report for "
+        "the same run and language (en-US, zh-CN or zh-TW; taken from the "
+        "language query parameter, X-App-Lang or Accept-Language, en-US "
+        "otherwise). Runs owned by another user return 404."
+    ),
+)
+@backtest_center_blp.alt_response(
+    200,
+    description="Markdown report attachment (backtest-run-{runId}.md)",
+    content_type="text/markdown",
+    success=True,
+)
+@login_required
+def download_strategy_backtest_report():
+    run_id = _positive_int(request.args.get("runId"))
+    if not run_id:
+        return jsonify({"code": 0, "msg": "strategyV2.runIdRequired", "data": None}), 400
+    try:
+        row = get_strategy_backtest_repository().get_run(user_id=int(g.user_id), run_id=run_id)
+        if not row:
+            return jsonify({"code": 0, "msg": "strategyV2.runNotFound", "data": None}), 404
+        language = resolve_report_language(
+            detect_request_language(request, default=DEFAULT_REPORT_LANGUAGE)
+        ) or DEFAULT_REPORT_LANGUAGE
+        markdown = render_backtest_report(row, language=language)
+    except Exception:
+        logger.exception("Backtest report download failed")
+        return jsonify({"code": 0, "msg": "strategyV2.backtest.reportFailed", "data": None}), 500
+    return Response(
+        markdown,
+        mimetype="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="{report_filename(row.get("id"))}"',
+            "Content-Language": language,
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 def _positive_int(value: Any) -> int | None:

@@ -22,7 +22,7 @@
 | 3. 儲存或更新源碼 | `POST /strategy-sources`、`PATCH /strategy-sources/{id}` | `save_strategy_source` | W |
 | 4. 送出回測 | `POST /backtest/run` | `submit_backtest` | B |
 | 5. 等待 job 結果 | `GET /jobs/{job_id}` 或 `GET /jobs/{job_id}/stream` | `wait_for_job`、`stream_job_until_done` | R |
-| 6. 查詢歷史 | `GET /backtest/runs`、`GET /backtest/runs/{run_id}`、`GET /strategy-sources/{id}/versions` | `list_backtest_runs`、`get_backtest_run`、`list_strategy_source_versions` | R |
+| 6. 查詢歷史 | `GET /backtest/runs`、`GET /backtest/runs/{run_id}`、`GET /backtest/runs/{run_id}/report`、`GET /strategy-sources/{id}/versions` | `list_backtest_runs`、`get_backtest_run`、`get_backtest_report`、`list_strategy_source_versions` | R |
 | 7. 參數優化 | `GET /optimization/parameter-space`、`POST /optimization/sweep`、`POST /optimization/walk-forward` | `get_optimization_parameter_space`、`submit_parameter_sweep`、`submit_walk_forward` | R／B |
 
 以下 HTTP 路徑都相對於 `/api/agent/v1`。所有需要 W、B、N、T 權限的 `POST`／`PATCH` 都必須帶唯一的 `Idempotency-Key` 標頭（最多 120 個字元）；只有在重試「完全相同」的請求時才可重用同一個 key。
@@ -224,6 +224,21 @@ MCP：`wait_for_job(job_id)` 會輪詢到結束狀態；`stream_job_until_done(j
 | `totalFees` | 總手續費（帳戶幣別；手續費合計欄位上線前存的紀錄為 `null`） |
 
 把同一個 `sourceId` 的各輪放在一起比較；`codeHash` 相同代表程式碼相同，差異來自 `params` 或區間。要看細節時用 `GET /backtest/runs/{run_id}`（MCP `get_backtest_run`）讀取完整的 `result` 與 `manifest`。兩個端點都只需要 R 權限，也不會回傳其他租戶的紀錄。
+
+### 向使用者報告回測結果
+
+`GET /backtest/runs/{run_id}/report?language=zh-TW`（MCP `get_backtest_report`）回傳 `data.markdown`，是由儲存的回測結果產生的 Markdown 報告。登入的使用者在 Backtest Center 下載的（`GET /api/backtest/report?runId=...`）是同一份內容，所以 Agent 與網頁呈現的數字一致。`language` 可用 `en-US`（預設）、`zh-CN`、`zh-TW`。報告包含以下區塊：
+
+| 區塊 | 內容 |
+| --- | --- |
+| 摘要 | 區間、市場、標的、週期、本金、期末權益、總報酬與年化報酬、買進持有報酬與超額報酬、最大回撤、Sharpe、Sortino、Calmar |
+| 成本拆解 | 手續費、滑點、資金費（尚未模擬前顯示為未計入）、交易成本合計、扣成本前毛利與毛損，以及成本占兩者的比例 |
+| 交易診斷 | 已平倉交易數、勝率、獲利因子、平均 R、扣成本前後的每筆期望值、持倉時間分布、MAE／MFE |
+| 執行假設 | 手續費率與滑點率、槓桿、成交／K 棒內／收盤／停損停利規則、資金費、資料類型，以及簡化模型的限制 |
+| 警告 | 非市場資料、基準缺漏或只部分涵蓋、被略過的標的、沒有成交、強制平倉、交易歷史已抽樣、沒有診斷欄位的舊回測、永續合約未模擬資金費 |
+| 策略版本 | 策略名稱、`sourceId`、回測有記錄時的原始碼版本、策略 ID、程式碼雜湊、引擎版本、參數 |
+
+回測沒有記錄的欄位會顯示「無資料」，不會讓報告失敗，因此交易診斷上線前的舊回測也能產生報告。轉述給使用者時請引用報告內容，不要憑記憶重述數字。
 
 ## 步驟 7：參數優化但不過度擬合
 

@@ -100,7 +100,13 @@ curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
 # Full stored result for one run
 curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/backtest/runs/41
+
+# Markdown report (data.markdown); language: en-US, zh-CN or zh-TW
+curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  "http://localhost:8888/api/agent/v1/backtest/runs/41/report?language=en-US"
 ```
+
+The report is the same document the Backtest Center download returns for that run; see [Report a run to the user](AGENT_STRATEGY_ITERATION.md#report-a-run-to-the-user) for its sections.
 
 Each list item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`, so iterations can be compared without loading full results. `pagination.hasMore` and `nextOffset` drive paging. Runs saved before fee totals were stored report `totalFees: null` in the list; the single-run read falls back to `result.totalCommission`. Another tenant's `runId` returns 404.
 
