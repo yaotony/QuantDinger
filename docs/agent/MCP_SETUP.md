@@ -61,4 +61,6 @@ Keep the configuration private. Prefer an environment-secret facility when the c
 
 The strategy manifest owns market, instrument, frequency, warmup, dependency, and leverage scope. Do not pass those as alternate backtest fields.
 
+To have Claude Code, Codex, or OpenClaw design, backtest, and diagnose strategies in the right order, install the [QuantDinger Agent skill](AGENT_SKILL.md).
+
 For the exact tool signatures, see [the MCP package README](../../mcp_server/README.md) and [Agent OpenAPI](agent-openapi.json).

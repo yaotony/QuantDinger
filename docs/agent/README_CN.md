@@ -7,9 +7,10 @@
 1. [Agent Gateway 快速开始](AGENT_QUICKSTART_CN.md)：创建令牌、验证身份、提交策略与回测。
 2. [MCP 接入指南](MCP_SETUP_CN.md)：连接 Cursor、Claude Code、Codex 或远程 Agent。
 3. [Agent 策略设计与回测迭代流程](AGENT_STRATEGY_ITERATION_CN.md)：不用浏览器完成编译、保存、回测与诊断，含回测区间上限与错误代码。
-4. [Cursor MCP 配置示例](cursor-mcp.example.json)：使用可替换地址与 Token 占位符的最小配置。
-5. [Agent OpenAPI](agent-openapi.json)：查看 `/api/agent/v1` 的机器可读契约。
-6. [API 约定](../architecture/API_CONVENTIONS.md)（英文）：理解响应、认证和接口分层。
+4. [QuantDinger Agent Skill](AGENT_SKILL_CN.md)：可安装的 [`SKILL.md`](skills/quantdinger-strategy-lab/SKILL.md)，让 Claude Code、Codex、OpenClaw 用一句话完成策略设计、回测、诊断与迭代，含安装方式、安全与防过度拟合规则及完整示例对话。
+5. [Cursor MCP 配置示例](cursor-mcp.example.json)：使用可替换地址与 Token 占位符的最小配置。
+6. [Agent OpenAPI](agent-openapi.json)：查看 `/api/agent/v1` 的机器可读契约。
+7. [API 约定](../architecture/API_CONVENTIONS.md)（英文）：理解响应、认证和接口分层。
 
 ## 权限模型
 

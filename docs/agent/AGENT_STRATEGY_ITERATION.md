@@ -4,6 +4,7 @@ This guide is for external agents (OpenClaw, Claude Code, Cursor, Codex, CLI bot
 
 Related references:
 
+- [QuantDinger Agent skill](AGENT_SKILL.md): an installable `SKILL.md` that packages this loop, its safety rules, and its anti-overfitting rules for Claude Code, Codex, and OpenClaw.
 - [Agent Gateway quickstart](AGENT_QUICKSTART.md) for authentication, scopes, and idempotency.
 - [MCP setup](MCP_SETUP.md) for wiring an agent to the MCP server.
 - [agent-openapi.json](agent-openapi.json) for the machine-readable contract.

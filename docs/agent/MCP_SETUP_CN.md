@@ -61,4 +61,6 @@ QUANTDINGER_AGENT_TOKEN=qd_agent_xxx
 3. 先以只读或模拟盘流程验证；实盘 Token 不应授予无关 Scope。
 4. 对写入、回测、通知、交易类工具使用唯一幂等键，并保留人工确认。
 
+要让 Claude Code、Codex 或 OpenClaw 按正确顺序设计策略、回测与诊断，请安装 [QuantDinger Agent Skill](AGENT_SKILL_CN.md)。
+
 精确工具签名见 [MCP 包 README](../../mcp_server/README.md) 和 [Agent OpenAPI](agent-openapi.json)。
