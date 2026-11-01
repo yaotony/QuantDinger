@@ -353,7 +353,7 @@
           "name": { "type": "string" },
           "min":  { "type": "number" },
           "max":  { "type": "number" },
-          "step": { "type": "number", "exclusiveMinimum": 0 }
+          "step": { "type": "number", "minimum": 0, "exclusiveMinimum": true }
         }
       },
       "OptimizationSweepRequest": {
