@@ -47,10 +47,51 @@
           "status":      { "type": "string", "enum": ["queued","running","succeeded","failed","cancelled"] },
           "request":     { "type": "object" },
           "result":      { "type": "object" },
-          "error":       { "type": "string" },
+          "error":       {
+            "nullable": true,
+            "description": "Failure reason. A structured `JobFailure` object when the runner raised a structured error (for example `strategyV2.backtestRangeLimit`), otherwise a plain string.",
+            "oneOf": [
+              { "type": "string" },
+              { "$ref": "#/components/schemas/JobFailure" }
+            ]
+          },
           "created_at":  { "type": "string", "format": "date-time" },
           "started_at":  { "type": "string", "format": "date-time" },
           "finished_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "JobFailure": {
+        "type": "object",
+        "required": ["code", "message", "details"],
+        "description": "Structured job failure. Thread and Celery runners persist the same shape.",
+        "properties": {
+          "code":    { "type": "string", "example": "strategyV2.backtestRangeLimit" },
+          "message": { "type": "string", "description": "Human-readable explanation, including suggested fixes when available" },
+          "details": { "oneOf": [{ "$ref": "#/components/schemas/BacktestRangeLimitDetails" }, { "type": "object" }] }
+        }
+      },
+      "BacktestRangeLimitDetails": {
+        "type": "object",
+        "description": "Returned in `details` of the 400 from POST /backtest/run and in `error.details` of a job that failed for the same reason. `fetch_days` covers the selected range plus indicator warmup.",
+        "properties": {
+          "error_type":               { "type": "string", "enum": ["BACKTEST_RANGE_LIMIT"] },
+          "msg":                      { "type": "string" },
+          "market":                   { "type": "string" },
+          "symbol":                   { "type": "string" },
+          "timeframe":                { "type": "string" },
+          "max_days":                 { "type": "integer", "description": "Maximum calendar days per fetch, warmup included" },
+          "max_range":                { "type": "string", "example": "1 year" },
+          "reason":                   { "type": "string" },
+          "selected_days":            { "type": "integer" },
+          "fetch_days":               { "type": "integer" },
+          "warmup_bars":              { "type": "integer" },
+          "warmup_days":              { "type": "integer", "description": "Calendar days needed by the indicator warmup" },
+          "fetch_start":              { "type": "string", "format": "date" },
+          "requested_start":          { "type": "string", "format": "date" },
+          "requested_end":            { "type": "string", "format": "date" },
+          "recommendation_available": { "type": "boolean", "description": "False when the warmup alone exceeds the limit" },
+          "recommended_start":        { "type": "string", "format": "date", "nullable": true, "description": "Start date that fits when keeping the requested end date" },
+          "recommended_end":          { "type": "string", "format": "date", "nullable": true, "description": "End date that fits when keeping the requested start date" }
         }
       },
       "TokenIssued": {
@@ -414,8 +455,24 @@
         "parameters": [
           { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
         ],
+        "description": "Compiles the strategy and checks the date range plus indicator warmup against the market/timeframe limit before a job is accepted or billed. An oversized range returns 400 with `message` `strategyV2.backtestRangeLimit` and `details` containing the limit, warmup days, and suggested dates.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BacktestRequest" } } } },
-        "responses": { "202": { "description": "Queued" } }
+        "responses": {
+          "202": { "description": "Queued" },
+          "400": {
+            "description": "Invalid request, compile failure, or range/warmup limit exceeded (`details` is `BacktestRangeLimitDetails`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/Error" },
+                    { "type": "object", "properties": { "details": { "$ref": "#/components/schemas/BacktestRangeLimitDetails" } } }
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/agent/v1/indicators/authoring-contract": {
@@ -489,7 +546,22 @@
         "summary": "Get a single job",
         "x-scope-class": "R",
         "parameters": [{ "in": "path", "name": "job_id", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }
+        "responses": {
+          "200": {
+            "description": "OK; `data` is a `Job`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/Envelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/Job" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "404": { "description": "Not found" }
+        }
       }
     },
     "/api/agent/v1/jobs/{job_id}/stream": {

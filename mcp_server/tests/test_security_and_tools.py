@@ -291,6 +291,38 @@ def test_submit_backtest_uses_strategy_v2_payload(monkeypatch, fresh_module):
     assert captured["headers"] == {"Idempotency-Key": "same-key"}
 
 
+def test_submit_backtest_returns_range_limit_details_verbatim(monkeypatch, fresh_module):
+    details = {
+        "error_type": "BACKTEST_RANGE_LIMIT",
+        "msg": "Backtest range exceeds limit",
+        "timeframe": "15m",
+        "max_days": 365,
+        "warmup_days": 3,
+        "recommendation_available": True,
+        "recommended_start": "2024-01-05",
+        "recommended_end": "2024-12-27",
+    }
+    body = {
+        "code": 400,
+        "message": "strategyV2.backtestRangeLimit",
+        "details": details,
+        "retriable": False,
+        "data": None,
+    }
+    with httpx.Client(base_url="http://fixture.test", transport=httpx.MockTransport(
+        lambda _: httpx.Response(400, json=body)
+    )) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        out = fresh_module.submit_backtest(
+            "def initialize(context):\n    pass\n",
+            "2023-01-01",
+            "2024-12-31",
+            idempotency_key="range-limit",
+        )
+
+    assert out == {"error": True, "status": 400, "body": body}
+
+
 def test_compile_strategy_code_forwards_idempotency_key(monkeypatch, fresh_module):
     captured = {}
 

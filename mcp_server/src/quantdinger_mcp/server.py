@@ -806,7 +806,13 @@ def submit_backtest(
     params: dict | None = None,
     idempotency_key: str = "",
 ) -> Any:
-    """Submit a Strategy API V2 backtest; its manifest owns market data scope."""
+    """Submit a Strategy API V2 backtest; its manifest owns market data scope.
+
+    A range that exceeds the market/timeframe limit (warmup included) is
+    rejected before a job is created: the gateway's 400 body, whose
+    ``details`` carry ``max_days``, ``warmup_days``, ``recommended_start``
+    and ``recommended_end``, is returned verbatim.
+    """
     assert_code_size(code, label="Strategy code")
     payload: dict[str, Any] = {
         "code": code,

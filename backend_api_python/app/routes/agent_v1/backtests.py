@@ -9,8 +9,10 @@ import os
 from typing import Any
 
 from app.services.backtest_jobs import parse_backtest_date, run_backtest_job
+from app.services.backtest_limits import BacktestRangeLimitError
 from app.services.billing_service import BillingError
 from app.services.strategy_v2 import StrategyV2BacktestService
+from app.services.strategy_v2.service import precheck_backtest_range
 from app.utils.agent_auth import (
     SCOPE_B, agent_required, current_token, current_user_id,
     instrument_allowed, market_allowed, with_idempotency,
@@ -112,6 +114,13 @@ def _validate_request(body: dict) -> tuple[Any, Any]:
             "Dynamic universes require an unrestricted instrument allowlist",
             http=403,
         )
+
+    # Reject oversized ranges (including indicator warmup) before a job is
+    # accepted and billed; details carry limits and suggested dates.
+    try:
+        precheck_backtest_range(manifest, start_date=start_date, end_date=end_date)
+    except BacktestRangeLimitError as exc:
+        return None, error(400, str(exc), details=exc.details, http=400)
 
     return program, None
 

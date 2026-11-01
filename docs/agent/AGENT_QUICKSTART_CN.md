@@ -42,7 +42,7 @@ curl -X POST http://localhost:8888/api/agent/v1/strategies \
 
 ## 3. 提交回测
 
-回测异步执行。提交后轮询 `/jobs/{job_id}`，或订阅 `/jobs/{job_id}/stream`。取消任务使用 `POST /jobs/{job_id}/cancel`，需要 `B` Scope、新幂等键以及 MCP 层确认。
+回测异步执行。提交后轮询 `/jobs/{job_id}`，或订阅 `/jobs/{job_id}/stream`。提交时会先按市场与周期上限检查回测区间（含指标 warmup，例如加密货币 `15m` 为 365 天），超限时不建立也不计费任务，直接返回 HTTP 400，`message` 为 `strategyV2.backtestRangeLimit`，`details` 包含 `max_days`、`warmup_days`、`recommended_start`、`recommended_end`；若 warmup 本身已超限，`recommendation_available` 为 `false`、建议日期为 `null`，需减少 warmup 或改用更高周期。任务运行时因同类原因失败（如动态股票池）时，`error` 为 `{code, message, details}` 对象，`details` 结构相同。取消任务使用 `POST /jobs/{job_id}/cancel`，需要 `B` Scope、新幂等键以及 MCP 层确认。
 
 ## 4. 研究、指标与交易
 
