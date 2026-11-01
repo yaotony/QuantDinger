@@ -379,8 +379,7 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         route="/api/agent/v1/strategy-sources/compile",
         requires=("code_or_source_id",),
         produces=("strategy_manifest",),
-        risk_level="write_draft",
-        read_only=False,
+        risk_level="read",
         priority=93,
     ),
     ToolDefinition(

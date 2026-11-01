@@ -363,7 +363,9 @@
     "/api/agent/v1/strategy-sources/compile": {
       "post": {
         "summary": "Compile Strategy API V2 source and return the canonical manifest without saving",
-        "x-scope-class": "W",
+        "description": "Read scope is sufficient because compilation never persists sources, versions, or jobs and needs no Idempotency-Key. Discovery runs in the bounded compile sandbox, so a dedicated compile quota applies on top of the token quota: AGENT_COMPILE_RATE_LIMIT_PER_MIN per token (default 20) and AGENT_TENANT_COMPILE_RATE_LIMIT_PER_MIN per tenant (default 60). source_id reads only tenant-owned, non-hidden source code.",
+        "x-scope-class": "R",
+        "x-rate-limit": { "operation": "strategy_compile", "per_token_per_min": 20, "per_tenant_per_min": 60 },
         "requestBody": {
           "required": true,
           "content": {
@@ -378,7 +380,13 @@
             }
           }
         },
-        "responses": { "200": { "description": "Compiled manifest" }, "400": { "description": "Invalid Strategy API V2 source" } }
+        "responses": {
+          "200": { "description": "Compiled manifest" },
+          "400": { "description": "Invalid Strategy API V2 source" },
+          "403": { "description": "Token lacks R scope, or the referenced source code is hidden" },
+          "404": { "description": "Referenced source_id not found for this tenant" },
+          "429": { "description": "Token quota or dedicated compile quota exceeded; honor Retry-After" }
+        }
       }
     },
     "/api/agent/v1/strategy-sources": {

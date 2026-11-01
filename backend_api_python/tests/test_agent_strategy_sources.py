@@ -138,8 +138,55 @@ def test_strategy_source_compile_and_create(client, monkeypatch, source_service)
     assert source_service.created["metadata"]["contract"] == "v2"
 
 
-def test_strategy_source_compile_requires_write_scope(client, monkeypatch, source_service):
+def _read_only_headers() -> dict:
+    return {
+        "Authorization": "Bearer qd_agent_SOURCEWORKSPACE12345",
+        "Content-Type": "application/json",
+    }
+
+
+def test_read_only_token_can_compile_but_cannot_save(client, monkeypatch, source_service):
     _authorize(monkeypatch, "R")
+
+    def _no_idempotency(*_args):
+        raise AssertionError("read-only compile must not reserve an idempotency key")
+
+    monkeypatch.setattr(agent_auth, "_reserve_idempotency", _no_idempotency)
+    code = "def initialize(context):\n    pass\n"
+
+    compiled = client.post(
+        "/api/agent/v1/strategy-sources/compile",
+        headers=_read_only_headers(),
+        json={"code": code},
+    )
+    assert compiled.status_code == 200
+    assert compiled.get_json()["data"]["manifest"]["strategyType"] == "single"
+
+    by_source = client.post(
+        "/api/agent/v1/strategy-sources/compile",
+        headers=_read_only_headers(),
+        json={"source_id": 12},
+    )
+    assert by_source.status_code == 200
+
+    created = client.post(
+        "/api/agent/v1/strategy-sources",
+        headers=_headers("source-create-readonly"),
+        json={"name": "SPY", "code": code},
+    )
+    updated = client.patch(
+        "/api/agent/v1/strategy-sources/12",
+        headers=_headers("source-update-readonly"),
+        json={"code": code},
+    )
+    assert created.status_code == 403
+    assert updated.status_code == 403
+    assert source_service.created is None
+    assert source_service.updated is None
+
+
+def test_compile_requires_read_scope(client, monkeypatch, source_service):
+    _authorize(monkeypatch, "B")
 
     response = client.post(
         "/api/agent/v1/strategy-sources/compile",
@@ -148,6 +195,76 @@ def test_strategy_source_compile_requires_write_scope(client, monkeypatch, sourc
     )
 
     assert response.status_code == 403
+
+
+def test_read_only_compile_cannot_read_hidden_or_foreign_source(client, monkeypatch, source_service):
+    _authorize(monkeypatch, "R")
+
+    missing = client.post(
+        "/api/agent/v1/strategy-sources/compile",
+        headers=_read_only_headers(),
+        json={"source_id": 99},
+    )
+    assert missing.status_code == 404
+
+    source_service.source["metadata"] = {"code_hidden": True}
+    hidden = client.post(
+        "/api/agent/v1/strategy-sources/compile",
+        headers=_read_only_headers(),
+        json={"source_id": 12},
+    )
+    assert hidden.status_code == 403
+
+
+def test_compile_has_dedicated_per_token_rate_limit(client, monkeypatch, source_service):
+    _authorize(monkeypatch, "R")
+    monkeypatch.setenv("AGENT_COMPILE_RATE_LIMIT_PER_MIN", "2")
+    payload = {"code": "def initialize(context):\n    pass\n"}
+
+    statuses = [
+        client.post(
+            "/api/agent/v1/strategy-sources/compile",
+            headers=_read_only_headers(),
+            json=payload,
+        )
+        for _ in range(3)
+    ]
+
+    assert [r.status_code for r in statuses] == [200, 200, 429]
+    limited = statuses[-1]
+    assert limited.get_json()["retriable"] is True
+    assert limited.get_json()["details"]["operation"] == "strategy_compile"
+    assert int(limited.headers["Retry-After"]) >= 1
+
+    # The compile quota is isolated: other R calls on the same token still pass.
+    listed = client.get("/api/agent/v1/strategy-sources", headers=_read_only_headers())
+    assert listed.status_code == 200
+
+
+def test_compile_has_dedicated_per_tenant_rate_limit(client, monkeypatch, source_service):
+    agent_auth._schema_ready = True
+    tokens = iter([801, 802, 803])
+
+    def _lookup(raw):
+        row = _token("R")
+        row["id"] = next(tokens)
+        return row
+
+    _authorize(monkeypatch, "R")
+    monkeypatch.setattr(agent_auth, "_lookup_token", _lookup)
+    monkeypatch.setenv("AGENT_TENANT_COMPILE_RATE_LIMIT_PER_MIN", "2")
+    payload = {"code": "def initialize(context):\n    pass\n"}
+
+    statuses = [
+        client.post(
+            "/api/agent/v1/strategy-sources/compile",
+            headers=_read_only_headers(),
+            json=payload,
+        ).status_code
+        for _ in range(3)
+    ]
+
+    assert statuses == [200, 200, 429]
 
 
 def test_strategy_authoring_contract_is_source_owned(client, monkeypatch):

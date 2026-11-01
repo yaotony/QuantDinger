@@ -17,7 +17,7 @@
 | 0. 建立 Token（人工、一次） | 以人類登入狀態呼叫 `POST /api/agent/v1/me/tokens` | 無 | 人類登入 |
 | 1. 讀取撰寫規範 | `GET /strategy-sources/authoring-contract` | `get_strategy_authoring_contract` | R |
 | 1. 讀取範本 | `GET /strategy-sources/templates` | `list_strategy_templates` | R |
-| 2. 只編譯不儲存 | `POST /strategy-sources/compile` | `compile_strategy_code` | W |
+| 2. 只編譯不儲存 | `POST /strategy-sources/compile` | `compile_strategy_code` | R |
 | 3. 儲存或更新源碼 | `POST /strategy-sources`、`PATCH /strategy-sources/{id}` | `save_strategy_source` | W |
 | 4. 送出回測 | `POST /backtest/run` | `submit_backtest` | B |
 | 5. 等待 job 結果 | `GET /jobs/{job_id}` 或 `GET /jobs/{job_id}/stream` | `wait_for_job`、`stream_job_until_done` | R |
@@ -87,9 +87,12 @@ authoring contract 是 API 版本、標的識別規則、可用 callback 與起�
 curl -X POST http://localhost:8888/api/agent/v1/strategy-sources/compile \
   -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: lab-compile-ema-v1" \
   -d '{"code": "<完整的 Strategy API V2 源碼>"}'
 ```
+
+編譯只需要 R 權限，也不需要 `Idempotency-Key`，因為它不會儲存任何東西；只負責驗證程式碼的 Token 不必拿到 W。每次編譯都會在有時間與記憶體上限的沙箱中探索策略，所以編譯在 Token 配額之外另有專屬配額：預設每個 Token 每分鐘 20 次、每個租戶每分鐘 60 次（`AGENT_COMPILE_RATE_LIMIT_PER_MIN`、`AGENT_TENANT_COMPILE_RATE_LIMIT_PER_MIN`）。收到 HTTP 429 時依 `Retry-After` 等待。
+
+開放給 R 權限的安全理由：編譯不寫入源碼、版本、job 或冪等紀錄；`source_id` 只會讀取同租戶、未隱藏的程式碼，這些內容 R Token 本來就能用 `GET /strategy-sources/{id}` 取得；源碼大小上限 512 KiB；策略探索在獨立子程序中執行，限制 10 秒與 512 MB，相同源碼重複編譯會命中快取。剩下的風險是運算資源消耗，由編譯專屬配額控管。
 
 成功時回傳 `data.manifest`。回測前先從中確認：
 

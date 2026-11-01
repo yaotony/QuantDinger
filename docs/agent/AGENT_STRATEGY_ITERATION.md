@@ -17,7 +17,7 @@ Related references:
 | 0. Issue a token (human, once) | `POST /api/agent/v1/me/tokens` with a human session | none | human login |
 | 1. Read the authoring contract | `GET /strategy-sources/authoring-contract` | `get_strategy_authoring_contract` | R |
 | 1. Read templates | `GET /strategy-sources/templates` | `list_strategy_templates` | R |
-| 2. Compile without saving | `POST /strategy-sources/compile` | `compile_strategy_code` | W |
+| 2. Compile without saving | `POST /strategy-sources/compile` | `compile_strategy_code` | R |
 | 3. Save or update the source | `POST /strategy-sources`, `PATCH /strategy-sources/{id}` | `save_strategy_source` | W |
 | 4. Submit a backtest | `POST /backtest/run` | `submit_backtest` | B |
 | 5. Wait for the job | `GET /jobs/{job_id}` or `GET /jobs/{job_id}/stream` | `wait_for_job`, `stream_job_until_done` | R |
@@ -87,9 +87,12 @@ Authoring rules that matter most for iteration:
 curl -X POST http://localhost:8888/api/agent/v1/strategy-sources/compile \
   -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: lab-compile-ema-v1" \
   -d '{"code": "<complete Strategy API V2 source>"}'
 ```
+
+Compile needs only R scope and no `Idempotency-Key`, because it never saves anything. A token that may only validate code therefore does not need W. Each compile runs strategy discovery in a time- and memory-bounded sandbox, so compile has its own quota on top of the token quota: 20 per minute per token and 60 per minute per tenant by default (`AGENT_COMPILE_RATE_LIMIT_PER_MIN`, `AGENT_TENANT_COMPILE_RATE_LIMIT_PER_MIN`). On HTTP 429, respect `Retry-After`.
+
+Security rationale for R scope: compile writes no sources, versions, jobs, or idempotency rows; `source_id` reads only tenant-owned, non-hidden code that `GET /strategy-sources/{id}` already returns to an R token; source size is capped at 512 KiB; and discovery runs in an isolated subprocess with a 10-second and 512 MB limit plus a cache for repeated identical source. The remaining risk is compute consumption, which the dedicated compile quota bounds.
 
 A successful response is `data.manifest`. Before backtesting, read from it:
 
