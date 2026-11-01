@@ -610,28 +610,43 @@ def concurrent_job_limits() -> tuple[int, int]:
     return tenant_cap, token_cap
 
 
-def count_active_jobs(*, user_id: int, agent_token_id: Optional[int] = None) -> int:
+def count_active_jobs(
+    *,
+    user_id: int,
+    agent_token_id: Optional[int] = None,
+    kind: Optional[str] = None,
+) -> int:
+    clauses = ["user_id = %s", "status IN ('queued', 'running')"]
+    params: list[Any] = [int(user_id)]
+    if agent_token_id is not None:
+        clauses.append("agent_token_id = %s")
+        params.append(int(agent_token_id))
+    if kind:
+        clauses.append("kind = %s")
+        params.append(str(kind))
     with get_db_connection() as db:
         cur = db.cursor()
-        if agent_token_id is None:
-            cur.execute(
-                """
-                SELECT COUNT(*) AS count
-                FROM qd_agent_jobs
-                WHERE user_id = %s AND status IN ('queued', 'running')
-                """,
-                (int(user_id),),
-            )
-        else:
-            cur.execute(
-                """
-                SELECT COUNT(*) AS count
-                FROM qd_agent_jobs
-                WHERE user_id = %s AND agent_token_id = %s
-                  AND status IN ('queued', 'running')
-                """,
-                (int(user_id), int(agent_token_id)),
-            )
+        cur.execute(
+            f"SELECT COUNT(*) AS count FROM qd_agent_jobs WHERE {' AND '.join(clauses)}",
+            tuple(params),
+        )
+        row = cur.fetchone() or {}
+        cur.close()
+    return int(row.get("count") or 0)
+
+
+def count_jobs_created_since(*, user_id: int, kind: str, since: datetime) -> int:
+    """Count a tenant's jobs of ``kind`` created at or after ``since`` (naive UTC)."""
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM qd_agent_jobs
+            WHERE user_id = %s AND kind = %s AND created_at >= %s
+            """,
+            (int(user_id), str(kind), since),
+        )
         row = cur.fetchone() or {}
         cur.close()
     return int(row.get("count") or 0)

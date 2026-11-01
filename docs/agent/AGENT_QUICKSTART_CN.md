@@ -59,6 +59,8 @@ curl -X POST http://localhost:8888/api/agent/v1/strategies \
 
 旧记录未保存手续费合计时，列表中的 `totalFees` 为 `null`，单笔读取会改用 `result.totalCommission`。其他租户的 `runId` 返回 404。
 
+优化已保存源码的参数时，请使用优化任务，而不是循环提交单次回测。`GET /optimization/parameter-space?sourceId=12`（R）返回源码声明的参数范围与上限。`POST /optimization/sweep` 与 `POST /optimization/walk-forward`（B，必须带 `Idempotency-Key`）会提交 `parameter_optimization` 任务；结果分别列出样本内（选参）与样本外（仅验证）指标，给出 `bestParamsOutOfSample`，并把最佳参数的回测写入历史（`result.history`）。组合数、并发数与每日次数超限时返回明确的 400/429 错误。详见[迭代流程步骤 7](AGENT_STRATEGY_ITERATION_CN.md#步驟-7參數優化但不過度擬合)。
+
 ## 4. 研究、指标与交易
 
 - `/research/*`：点时点股票池、因子元数据和租户自选列表。

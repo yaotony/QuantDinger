@@ -50,6 +50,7 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 | `create_strategy`, `update_strategy`, `list_strategies`, `get_strategy` | R/W | Strategy API V2 deployments |
 | `submit_backtest` | B | Strategy API V2 backtest job |
 | `list_backtest_runs`, `get_backtest_run` | R | Backtest history with summary metrics (return, max drawdown, trades, win rate, total fees) and full results by `runId` |
+| `get_optimization_parameter_space`, `submit_parameter_sweep`, `submit_walk_forward` | R/B | Declared parameter space, and bounded parameter sweep / walk-forward jobs with separate in-sample and out-of-sample results |
 | `list_jobs`, `get_job`, `wait_for_job`, `stream_job_until_done`, `cancel_job` | R/B | Bounded jobs and confirmed cancellation |
 | `runtime_overview`, `stop_strategy` | R/T | Runtime inspection and confirmed stop |
 | Broker account, strategy position/trade, and quick-trade observation tools | R | Secret-free execution observations |
@@ -114,6 +115,22 @@ submit_backtest(
 Market, symbol, and timeframe are not backtest parameters. They come from the compiled strategy manifest. Use `wait_for_job` or `stream_job_until_done` to obtain the result.
 
 The finished job's `result.runId` identifies the saved history record. Compare iterations with `list_backtest_runs` (filter by `source_id`, `strategy_id`, `symbol`, `market`, `timeframe`, `created_from`/`created_to`; page with `limit`/`offset` while `pagination.hasMore` is true). Each item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`. Read one run's full result with `get_backtest_run(run_id)`.
+
+Optimize a saved source's parameters with a job instead of looping `submit_backtest`. Read the declared ranges and limits first; every `parameter_space` entry must stay inside them:
+
+```text
+get_optimization_parameter_space(source_id=12)
+submit_walk_forward(
+  source_id=12,
+  start_date="2023-01-01",
+  end_date="2024-12-31",
+  parameter_space=[{"name": "lookback", "min": 20, "max": 60, "step": 10}],
+  folds=4,
+  idempotency_key="wf-example"
+)
+```
+
+`submit_parameter_sweep` selects on the in-sample window and runs only the best combination on the trailing out-of-sample window (`out_of_sample_ratio`). `submit_walk_forward` selects per fold on training data, validates on the next window, and checks the final `bestParams` once on a trailing holdout (`holdout_ratio`). The job result keeps `inSample` and `outOfSample` apart, reports `bestParamsOutOfSample` (with `passed` and `degradation`), and `result.history` holds the backtest-history run ids of the best parameters. The gateway enforces the same limits as the HTTP API: combinations per job (400 `OPTIMIZATION_COMBINATION_LIMIT`), concurrent optimization jobs per tenant (429 `OPTIMIZATION_CONCURRENCY_LIMIT`), and jobs per tenant per UTC day (429 `OPTIMIZATION_DAILY_LIMIT`); these errors are returned verbatim.
 
 Indicators are chart-only. Validate and save them through the indicator tools, then convert the idea into Strategy API V2 code before using `submit_backtest` or `create_strategy`.
 

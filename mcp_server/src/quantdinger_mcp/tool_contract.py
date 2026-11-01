@@ -20,6 +20,8 @@ WRITE_TOOLS = {
     "save_strategy_source": True,
     "restore_strategy_source_version": True,
     "submit_backtest": False,
+    "submit_parameter_sweep": False,
+    "submit_walk_forward": False,
     "cancel_open_paper_orders": True,
     "add_watchlist": True,
     "remove_watchlist": True,

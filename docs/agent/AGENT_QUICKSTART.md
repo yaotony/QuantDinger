@@ -104,6 +104,8 @@ curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
 
 Each list item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`, so iterations can be compared without loading full results. `pagination.hasMore` and `nextOffset` drive paging. Runs saved before fee totals were stored report `totalFees: null` in the list; the single-run read falls back to `result.totalCommission`. Another tenant's `runId` returns 404.
 
+To optimize a saved source's parameters, use an optimization job instead of looping single backtests. `GET /optimization/parameter-space?sourceId=12` (R) returns the declared parameter ranges and limits. `POST /optimization/sweep` and `POST /optimization/walk-forward` (B, `Idempotency-Key` required) queue a `parameter_optimization` job whose result lists in-sample (selection) and out-of-sample (validation only) metrics separately, reports `bestParamsOutOfSample`, and saves the best parameters' runs to backtest history (`result.history`). Combination, concurrency, and daily caps return explicit 400/429 errors. See [Step 7 of the iteration guide](AGENT_STRATEGY_ITERATION.md#step-7-optimize-parameters-without-overfitting).
+
 Cancel a queued or running job with `POST /jobs/{job_id}/cancel` using B scope, confirmation at the MCP layer, and a new idempotency key. A running worker may finish its local computation, but it cannot overwrite the durable cancelled state.
 
 ## Indicators

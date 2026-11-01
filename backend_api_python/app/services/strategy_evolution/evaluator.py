@@ -157,6 +157,32 @@ class PreparedEvolutionEvaluator:
         self._results[cache_key] = result
         return result
 
+    def persist_run(
+        self,
+        params: dict[str, Any],
+        start_date: datetime,
+        end_date: datetime,
+        commission: float,
+        slippage: float,
+    ) -> int | None:
+        """Run one window with full reporting and save it to backtest history."""
+        run_id, _result = self.backtest_service.run(
+            user_id=self.user_id,
+            code=self.code,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=self.initial_capital,
+            leverage_enabled=self.leverage_enabled,
+            leverage=self.leverage,
+            commission=commission,
+            slippage=slippage,
+            params=params,
+            persist=True,
+            source_id=self.source_id,
+            strategy_name=self.strategy_name,
+        )
+        return run_id
+
     def evaluate_plan(
         self,
         params: dict[str, Any],
