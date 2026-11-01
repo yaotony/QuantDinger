@@ -16,3 +16,5 @@ b277e53750c68d560f439389f5f3d8cae0665635:backend_api_python/app/routes/settings.
 10afffae3f8cf430a486f9d398d5c6f467c41cd2:mcp_server/README.md:generic-api-key:67
 10afffae3f8cf430a486f9d398d5c6f467c41cd2:mcp_server/README.md:generic-api-key:68
 681b23c09bf701936c0eb9496d1b393817f10e80:backend_api_python/tests/test_registration_rate_limit.py:generic-api-key:194
+c98ba0f0643fdb99661f0d116440a32d3f61aa32:tools/claude-cli-bridge/tests/conftest.py:generic-api-key:15
+6fb5d541fec8c324677bcac90a9eb3a7508f28af:tools/claude-cli-bridge/tests/test_models.py:generic-api-key:27

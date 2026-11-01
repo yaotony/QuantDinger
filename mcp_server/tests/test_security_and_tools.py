@@ -285,7 +285,7 @@ def test_submit_backtest_uses_strategy_v2_payload(monkeypatch, fresh_module):
     assert captured["path"] == "/api/agent/v1/backtest/run"
     assert captured["json"]["params"] == {"fast": 10}
     assert set(captured["json"]) == {
-        "code", "startDate", "endDate", "initialCapital", "commission",
+        "code", "startDate", "endDate", "initialCapital",
         "leverageEnabled", "leverage", "params",
     }
     assert captured["headers"] == {"Idempotency-Key": "same-key"}
@@ -321,6 +321,37 @@ def test_submit_backtest_returns_range_limit_details_verbatim(monkeypatch, fresh
         )
 
     assert out == {"error": True, "status": 400, "body": body}
+
+
+def test_submit_backtest_cost_defaults_are_owned_by_backend(fresh_module):
+    import inspect
+
+    signature = inspect.signature(fresh_module.submit_backtest)
+    # None means "not sent": the backend applies DEFAULT_COMMISSION /
+    # DEFAULT_SLIPPAGE so MCP and Backtest Center runs use the same costs.
+    assert signature.parameters["commission"].default is None
+    assert signature.parameters["slippage"].default is None
+
+
+def test_submit_backtest_forwards_explicit_cost_overrides(monkeypatch, fresh_module):
+    captured = {}
+
+    def fake_post(path, json=None, headers=None):
+        captured["json"] = json
+        return {"job_id": "job-test"}
+
+    monkeypatch.setattr(fresh_module, "_post", fake_post)
+    fresh_module.submit_backtest(
+        "def initialize(context):\n    pass\n",
+        "2024-01-01",
+        "2024-06-30",
+        commission=0.002,
+        slippage=0.0,
+        idempotency_key="cost-override",
+    )
+
+    assert captured["json"]["commission"] == 0.002
+    assert captured["json"]["slippage"] == 0.0
 
 
 def test_compile_strategy_code_forwards_idempotency_key(monkeypatch, fresh_module):

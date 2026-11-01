@@ -74,6 +74,8 @@ Poll `/api/agent/v1/jobs/{job_id}` or consume `/api/agent/v1/jobs/{job_id}/strea
 
 The submission checks the date range plus indicator warmup against the market and timeframe limit (for example 365 days for crypto `15m`) before it creates or bills a job. An oversized request returns HTTP 400 with `message: "strategyV2.backtestRangeLimit"` and `details` containing `max_days`, `warmup_days`, `recommended_start`, and `recommended_end`. When the warmup alone exceeds the limit, `recommendation_available` is `false` and the recommended dates are `null`; reduce the warmup or use a higher timeframe. If a job still fails for the same reason at run time (for example a dynamic universe), its `error` is the object `{code, message, details}` with the same `details`.
 
+For the full design-and-iterate loop, backtest range limits, and error handling, see [Agent strategy design and backtest iteration](AGENT_STRATEGY_ITERATION.md).
+
 Successful backtests also save a standard Backtest Center history record for the
 agent token's user. The completed job's `result.runId` identifies that record;
 the initial submission still returns `job_id` while the run is queued. The result
