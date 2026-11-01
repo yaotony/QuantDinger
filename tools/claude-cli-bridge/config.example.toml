@@ -15,11 +15,11 @@ api_key = "REPLACE_WITH_A_RANDOM_SECRET"
 # Absolute path to the Claude Code CLI (`command -v claude`).
 claude_path = "/Users/YOUR_NAME/.local/bin/claude"
 
-# Model aliases exposed by /v1/models and accepted in requests.
+# Models exposed by /v1/models and accepted in requests. Only names listed here
+# are ever passed to the CLI. Add full ids such as "claude-sonnet-5-5" to pin
+# an exact model version.
 models = ["sonnet", "opus", "haiku"]
 default_model = "sonnet"
-# Also accept full model ids such as "claude-sonnet-5-5".
-allow_claude_model_ids = true
 # What to do with an unknown model name: "error" (404) or "default".
 unknown_model = "error"
 

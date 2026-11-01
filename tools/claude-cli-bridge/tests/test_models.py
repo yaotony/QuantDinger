@@ -48,7 +48,6 @@ def test_configured_aliases_are_listed(make_server):
         ("opus", "opus"),
         ("anthropic/haiku", "haiku"),
         ("", "sonnet"),
-        ("claude-sonnet-5-5", "claude-sonnet-5-5"),
     ],
 )
 def test_requested_model_reaches_cli(base_url, calls, requested, cli_model):
@@ -83,10 +82,22 @@ def test_unknown_model_can_fall_back_to_default(make_server, calls):
     assert "--model=haiku" in argv
 
 
-def test_claude_ids_can_be_disabled():
-    config = BridgeConfig(allow_claude_model_ids=False)
+def test_full_ids_are_rejected_unless_configured():
     with pytest.raises(BridgeError):
-        resolve("claude-opus-5-5", config)
+        resolve("claude-opus-5-5", BridgeConfig())
+    pinned = BridgeConfig(models=("sonnet", "claude-opus-5-5"))
+    assert resolve("claude-opus-5-5", pinned) == "claude-opus-5-5"
+    assert resolve("anthropic/claude-opus-5-5", pinned) == "claude-opus-5-5"
+
+
+def test_configured_full_id_reaches_cli(make_server, calls):
+    url = make_server(models=("sonnet", "claude-sonnet-5-5"))
+    status, _ = post_json(
+        f"{url}/v1/chat/completions",
+        {"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": "q"}]},
+    )
+    assert status == 200
+    assert "--model=claude-sonnet-5-5" in calls()[0]["argv"]
 
 
 @pytest.mark.parametrize(

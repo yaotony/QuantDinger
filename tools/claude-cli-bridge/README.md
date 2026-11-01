@@ -85,7 +85,7 @@ cd tools/claude-cli-bridge
    | Custom API Key | 第 1 步查到的 API Key |
    | Custom Model | `sonnet`，也可以填 `opus` 或 `haiku` |
 
-模型名稱也接受 `anthropic/sonnet` 這類帶前綴的寫法，以及 `claude-sonnet-5-5` 這類完整模型 ID。
+模型名稱也接受 `anthropic/sonnet` 這類帶前綴的寫法。只有設定檔 `models` 清單中列出的名稱會被接受；若要指定 `claude-sonnet-5-5` 這類完整模型 ID，請先把它加進清單。
 
 ## 設定檔
 
@@ -96,7 +96,8 @@ cd tools/claude-cli-bridge
 | 欄位 | 預設值 | 說明 |
 |---|---|---|
 | `port` | `18790` | 監聽埠號。修改後 QuantDinger 的 URL 也要一起改 |
-| `default_model` | `sonnet` | 請求沒有指定模型時使用的模型 |
+| `models` | `sonnet`、`opus`、`haiku` | 允許使用的模型名稱。只有列在這裡的名稱會傳給 CLI |
+| `default_model` | `sonnet` | 請求沒有指定模型時使用的模型，必須列在 `models` 中 |
 | `max_concurrency` | `2` | 同時執行的 CLI 數量上限 |
 | `overflow` | `queue` | 超過上限時的處理方式。`queue` 會排隊等待，`reject` 會立即回 429 |
 | `queue_timeout_seconds` | `60` | 排隊等待的時間上限 |
@@ -113,7 +114,7 @@ cd tools/claude-cli-bridge
 | 錯誤代碼 `cli_usage_limit` | 訂閱額度已用完，等額度重置後再試 |
 | 錯誤代碼 `bridge_busy` | 同時請求太多。調高 `max_concurrency` 或 `queue_timeout_seconds` |
 | 錯誤代碼 `cli_timeout` | 回應超過 `request_timeout_seconds`。長篇報告可以調高這個值 |
-| 錯誤代碼 `model_not_found` | 模型名稱不在 `models` 清單中，請改用 `sonnet`、`opus` 或 `haiku` |
+| 錯誤代碼 `model_not_found` | 模型名稱不在 `models` 清單中。改用 `sonnet`、`opus` 或 `haiku`，或把該名稱加進設定檔 |
 | 錯誤代碼 `invalid_json_output` | JSON 模式下，模型連續兩次沒有回傳合法 JSON。可改用更強的模型後重試 |
 | QuantDinger 回報連線失敗 | 執行 `./scripts/launchd.sh status` 確認服務在執行。URL 必須用 `host.docker.internal`，不能用 `localhost` |
 | 安裝時顯示埠號被占用 | 用 `lsof -nP -iTCP:18790 -sTCP:LISTEN` 找出占用的程式，或在設定檔改用其他埠號 |

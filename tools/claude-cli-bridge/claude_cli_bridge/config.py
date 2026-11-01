@@ -24,7 +24,6 @@ class BridgeConfig:
     default_model: str = "sonnet"
     default_system_prompt: str = "You are a helpful assistant."
     models: tuple[str, ...] = ("sonnet", "opus", "haiku")
-    allow_claude_model_ids: bool = True
     unknown_model: str = "error"
     max_concurrency: int = 2
     overflow: str = "queue"

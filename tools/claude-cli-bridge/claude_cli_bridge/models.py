@@ -1,14 +1,12 @@
 """Model aliases exposed by the bridge and their mapping to CLI ``--model`` values."""
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from .config import BridgeConfig
 from .errors import BridgeError
 
 _PROVIDER_PREFIXES = ("anthropic/", "claude-cli/")
-_CLAUDE_MODEL_ID = re.compile(r"claude-[a-z0-9][a-z0-9.-]{0,63}")
 
 
 def model_not_found(name: str) -> BridgeError:
@@ -28,18 +26,14 @@ def _strip_prefix(name: str) -> str:
 
 
 def _allowed(name: str, config: BridgeConfig) -> str | None:
-    """Return the trusted CLI model value for ``name``, or None if it is not allowed.
+    """Return the configured model value matching ``name``, or None.
 
-    Aliases resolve to the configured string itself, and full ids must match a
-    strict pattern, so request text never reaches the CLI unchecked.
+    Only strings from the operator's ``models`` list are ever returned, so
+    request text never reaches the CLI command line.
     """
     for alias in config.models:
         if name == alias:
             return alias
-    if config.allow_claude_model_ids:
-        match = _CLAUDE_MODEL_ID.fullmatch(name)
-        if match:
-            return match.group(0)
     return None
 
 
