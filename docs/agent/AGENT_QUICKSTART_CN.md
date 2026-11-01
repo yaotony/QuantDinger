@@ -11,6 +11,8 @@ curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/whoami
 ```
 
+开始工作前，可调用 `GET /api/agent/v1/environment`（`R` Scope；MCP 为 `check_environment`）一次查看后端版本、Token 权限、是否仅限模拟盘、回测并发额度、各市场与周期的回测区间上限以及 Token 到期时间。每项检查为 `pass`、`warn` 或 `fail`，并附 `remediation` 修正建议；MCP 工具还会检查连接与认证。返回内容不含 Token 本身。
+
 任何会产生副作用的 `W/B/N/T` 请求都必须带唯一的 `Idempotency-Key`。只有重试完全相同的方法、路径、查询和请求体时，才复用原键。
 
 ## 2. 策略源码与部署

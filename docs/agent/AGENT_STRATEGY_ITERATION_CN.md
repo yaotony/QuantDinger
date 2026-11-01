@@ -63,6 +63,8 @@ curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/whoami
 ```
 
+或一次檢查整個環境：`GET /api/agent/v1/environment`（`R` Scope；MCP 為 `check_environment`，另外會檢查連線與認證）。回報後端版本、Token 權限、是否只能操作模擬盤、回測同時執行上限與目前執行中的數量、各市場與週期的回測區間上限，以及 Token 到期時間。`checks` 中每一項的 `status` 是 `pass`、`warn` 或 `fail`，不是 `pass` 時附 `remediation` 修正建議，例如缺少 `B` 權限時請到 `/me/tokens` 重新建立 Token；`overall` 是最嚴重的狀態。回報不含 Token 本身或任何機密。
+
 ## 步驟 1：讀取撰寫規範與範本
 
 ```bash

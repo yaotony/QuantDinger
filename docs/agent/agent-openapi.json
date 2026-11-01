@@ -162,6 +162,70 @@
           "recommended_end":   { "type": "string", "format": "date", "nullable": true }
         }
       },
+      "EnvironmentCheck": {
+        "type": "object",
+        "required": ["id", "status", "message", "remediation"],
+        "properties": {
+          "id":          { "type": "string", "enum": ["scopes", "paper_only", "backtest_quota", "backtest_range_limits", "token_expiry"], "description": "MCP check_environment also emits connectivity, authentication, and version" },
+          "status":      { "type": "string", "enum": ["pass", "warn", "fail"] },
+          "message":     { "type": "string" },
+          "remediation": { "type": "string", "nullable": true, "description": "Suggested fix; null when the check passes" }
+        }
+      },
+      "BacktestRangeLimit": {
+        "type": "object",
+        "required": ["max_days", "max_range", "reason"],
+        "properties": {
+          "max_days":  { "type": "integer", "description": "Maximum calendar days per fetch, warmup included" },
+          "max_range": { "type": "string", "example": "1 year" },
+          "reason":    { "type": "string" }
+        }
+      },
+      "EnvironmentReport": {
+        "type": "object",
+        "description": "Returned in `data` by GET /environment. Never contains the token value, hash, or id.",
+        "required": ["service", "api_version", "app_version", "overall", "token", "backtest_quota", "backtest_range_limits", "checks"],
+        "properties": {
+          "service":     { "type": "string" },
+          "api_version": { "type": "string", "example": "v1" },
+          "app_version": { "type": "string", "description": "QuantDinger backend release version" },
+          "overall":     { "type": "string", "enum": ["pass", "warn", "fail"], "description": "Most severe check status" },
+          "token": {
+            "type": "object",
+            "required": ["agent_name", "scopes", "markets", "instruments", "paper_only", "rate_limit_per_min", "expires_at"],
+            "properties": {
+              "agent_name":         { "type": "string", "nullable": true },
+              "scopes":             { "type": "array", "items": { "type": "string", "enum": ["R","W","B","N","C","T"] } },
+              "markets":            { "type": "array", "items": { "type": "string" } },
+              "instruments":        { "type": "array", "items": { "type": "string" } },
+              "paper_only":         { "type": "boolean" },
+              "rate_limit_per_min": { "type": "integer" },
+              "expires_at":         { "type": "string", "format": "date-time", "nullable": true }
+            }
+          },
+          "backtest_quota": {
+            "type": "object",
+            "required": ["tenant_limit", "tenant_active", "token_limit", "token_active", "available"],
+            "properties": {
+              "tenant_limit":  { "type": "integer", "description": "Max queued/running agent jobs per tenant" },
+              "tenant_active": { "type": "integer", "nullable": true, "description": "Null when the count is unavailable" },
+              "token_limit":   { "type": "integer", "description": "Max queued/running agent jobs per token" },
+              "token_active":  { "type": "integer", "nullable": true },
+              "available":     { "type": "integer", "nullable": true, "description": "Backtests that can be submitted now before HTTP 429" }
+            }
+          },
+          "backtest_range_limits": {
+            "type": "object",
+            "required": ["warmup_included", "default", "markets"],
+            "properties": {
+              "warmup_included": { "type": "boolean" },
+              "default": { "type": "object", "description": "Timeframe to limit, for markets without an override", "additionalProperties": { "$ref": "#/components/schemas/BacktestRangeLimit" } },
+              "markets": { "type": "object", "description": "Market to timeframe to limit overrides, filtered to the token market allowlist", "additionalProperties": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/BacktestRangeLimit" } } }
+            }
+          },
+          "checks": { "type": "array", "items": { "$ref": "#/components/schemas/EnvironmentCheck" } }
+        }
+      },
       "TokenIssued": {
         "type": "object",
         "properties": {
@@ -320,6 +384,25 @@
         "summary": "Inspect calling token (scopes, allowlists, paper_only)",
         "x-scope-class": "R",
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Envelope" } } } } }
+      }
+    },
+    "/api/agent/v1/environment": {
+      "get": {
+        "summary": "Agent environment readiness report",
+        "description": "One-call readiness report for the calling token: backend version, scopes, paper-only mode, backtest concurrency quota (limits and active jobs), backtest range limits by market and timeframe, and token expiry. Each check is pass/warn/fail with a remediation hint. The token value, hash, and id are never returned. Read-only; no job or billing. The MCP tool check_environment adds connectivity and authentication checks.",
+        "x-scope-class": "R",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": {
+              "allOf": [
+                { "$ref": "#/components/schemas/Envelope" },
+                { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/EnvironmentReport" } } }
+              ]
+            } } }
+          },
+          "401": { "description": "Missing, invalid, expired, or revoked token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
       }
     },
     "/api/agent/v1/markets": {

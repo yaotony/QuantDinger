@@ -63,6 +63,8 @@ curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/whoami
 ```
 
+Or check the whole environment in one call: `GET /api/agent/v1/environment` (R scope; MCP `check_environment`, which also checks connectivity and authentication). It reports the backend version, token scopes, whether the token is paper-only, the backtest concurrency limit and active job count, the range limits by market and timeframe, and token expiry. Each entry in `checks` has `status` `pass`, `warn`, or `fail` and, unless it passes, a `remediation` hint (for example, re-issue the token at `/me/tokens` when the B scope is missing); `overall` is the worst status. The report never contains the token or other secrets.
+
 ## Step 1: Read the authoring contract and templates
 
 ```bash

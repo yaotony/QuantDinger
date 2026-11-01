@@ -57,7 +57,7 @@ QUANTDINGER_AGENT_TOKEN=qd_agent_xxx
 ## 验收清单
 
 1. 客户端能发现 QuantDinger 工具。
-2. 使用 `whoami` 或只读工具确认 Base URL、租户和 Scope 正确。
+2. 使用 `check_environment` 一次确认连接、版本、Scope、是否仅限模拟盘、回测额度与区间上限；有 `warn` 或 `fail` 时按 `remediation` 修正。也可用 `whoami` 只查身份。
 3. 先以只读或模拟盘流程验证；实盘 Token 不应授予无关 Scope。
 4. 对写入、回测、通知、交易类工具使用唯一幂等键，并保留人工确认。
 

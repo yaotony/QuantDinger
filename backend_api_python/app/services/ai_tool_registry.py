@@ -198,6 +198,24 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         priority=98,
     ),
     ToolDefinition(
+        id="mcp.check_environment",
+        category="mcp",
+        label_zh="Agent 环境检查",
+        label_en="Agent environment check",
+        description_zh=(
+            "开始工作前一次检查连接、版本、Token 权限、是否仅限模拟盘、回测并发额度与回测区间上限，"
+            "每项给出通过/警告/失败与修正建议。"
+        ),
+        description_en=(
+            "Before starting work, check connectivity, version, token scopes, paper-only mode, "
+            "backtest concurrency quota, and range limits; each item is pass/warn/fail with a fix."
+        ),
+        route="/api/agent/v1/environment",
+        produces=("environment_report",),
+        risk_level="read",
+        priority=98,
+    ),
+    ToolDefinition(
         id="mcp.list_markets",
         category="market",
         label_zh="列出市场",
