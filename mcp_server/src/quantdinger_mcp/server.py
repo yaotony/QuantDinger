@@ -799,25 +799,31 @@ def submit_backtest(
     start_date: str,
     end_date: str,
     initial_capital: float = 10000,
-    commission: float = 0.001,
+    commission: float | None = None,
     slippage: float | None = None,
     leverage_enabled: bool = False,
     leverage: float = 1.0,
     params: dict | None = None,
     idempotency_key: str = "",
 ) -> Any:
-    """Submit a Strategy API V2 backtest; its manifest owns market data scope."""
+    """Submit a Strategy API V2 backtest; its manifest owns market data scope.
+
+    Omit ``commission`` and ``slippage`` to use the backend defaults (the same
+    cost assumptions as the Backtest Center); pass explicit rates to override.
+    """
     assert_code_size(code, label="Strategy code")
     payload: dict[str, Any] = {
         "code": code,
         "startDate": start_date,
         "endDate": end_date,
         "initialCapital": initial_capital,
-        "commission": commission,
         "leverageEnabled": bool(leverage_enabled),
         "leverage": leverage,
         "params": assert_json_dict("params", params),
     }
+    # Cost fields are only sent when set so the backend owns the defaults.
+    if commission is not None:
+        payload["commission"] = commission
     if slippage is not None:
         payload["slippage"] = slippage
     headers = _idempotency_headers(idempotency_key)
