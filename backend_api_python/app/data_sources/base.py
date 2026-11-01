@@ -106,7 +106,16 @@ class BaseDataSource(ABC):
         Implementations return a normalized ticker dict (for example, {'last': ...}).
         """
         raise NotImplementedError("get_ticker is not implemented for this data source")
-    
+
+    def get_earliest_kline_time(self, symbol: str, timeframe: str) -> Optional[int]:
+        """Return the open time (Unix seconds) of the first available candle.
+
+        Only providers that can report their true first candle should override
+        this. ``None`` means the earliest time is unknown; callers must report
+        it as unknown instead of estimating.
+        """
+        return None
+
     def format_kline(
         self,
         timestamp: int,

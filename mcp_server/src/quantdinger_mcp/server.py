@@ -35,6 +35,7 @@ MCP_TOOL_NAMES = (
     "list_markets",
     "search_symbols",
     "get_klines",
+    "get_data_coverage",
     "get_price",
     "list_strategies",
     "get_strategy",
@@ -330,6 +331,41 @@ def get_klines(
     if before_time is not None:
         params["before_time"] = int(before_time)
     return _get("/api/agent/v1/klines", params=params)
+
+
+@_tool
+def get_data_coverage(
+    market: str,
+    symbol: str,
+    timeframe: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    warmup_bars: int = 0,
+    exchange_id: str | None = None,
+    market_type: str | None = None,
+) -> Any:
+    """Check data coverage before designing or submitting a backtest.
+
+    Returns the earliest available bar (``earliest_bar.status`` is
+    ``unknown`` when the data source cannot report it; no date is guessed),
+    the market/timeframe range limit with ``warmup_days`` and
+    ``max_selected_days``, and, when ``start_date``/``end_date``
+    (YYYY-MM-DD) are given, ``evaluation.feasible`` plus
+    ``recommended_start``/``recommended_end``. The range verdict uses the
+    same rule as ``submit_backtest``.
+    """
+    params: dict[str, Any] = {"market": market, "symbol": symbol, "timeframe": timeframe}
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    if warmup_bars:
+        params["warmup_bars"] = int(warmup_bars)
+    if exchange_id:
+        params["exchange_id"] = exchange_id
+    if market_type:
+        params["market_type"] = market_type
+    return _get("/api/agent/v1/data-coverage", params=params)
 
 
 @_tool

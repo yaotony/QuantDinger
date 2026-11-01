@@ -8,7 +8,7 @@ import os
 from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import pandas as pd
 
@@ -846,22 +846,66 @@ def precheck_backtest_range(
     """
     if manifest.universe.kind != "static":
         return
-    candidates = [_instrument_member(item) for item in manifest.universe.instruments]
+    candidates = backtest_range_candidates(manifest.universe.instruments)
     if not candidates:
         return
-    _attach_catalog_products(candidates)
-    end_of_day = end_date.replace(hour=23, minute=59, second=59)
     for frequency in manifest.frequencies:
-        _enforce_backtest_range(
-            candidates=candidates,
+        violation = backtest_range_violation(
+            candidates,
             timeframe=frequency,
             start_date=start_date,
-            end_date=end_of_day,
+            end_date=end_date,
             warmup_bars=manifest.warmup_bars,
-            fetch_start=start_date - timedelta(
-                days=_warmup_calendar_days(frequency, manifest.warmup_bars, candidates)
-            ),
         )
+        if violation:
+            raise BacktestRangeLimitError(violation)
+
+
+def backtest_range_candidates(instruments: Iterable[InstrumentSpec]) -> list[dict[str, Any]]:
+    """Build range-check candidates with catalog-derived underlying markets."""
+    candidates = [_instrument_member(item) for item in instruments]
+    if candidates:
+        _attach_catalog_products(candidates)
+    return candidates
+
+
+def backtest_range_violation(
+    candidates: list[dict[str, Any]],
+    *,
+    timeframe: str,
+    start_date: datetime,
+    end_date: datetime,
+    warmup_bars: int,
+) -> dict[str, Any] | None:
+    """Return the strictest range/warmup violation for date-only bounds.
+
+    This is the single rule shared by submission-time prechecks and the
+    Agent data-coverage query; the job-time check in ``run`` computes the
+    same fetch window, so all three reach the same verdict for one input.
+    """
+    end_of_day = end_date.replace(hour=23, minute=59, second=59)
+    return _backtest_range_violation(
+        candidates=candidates,
+        timeframe=timeframe,
+        start_date=start_date,
+        end_date=end_of_day,
+        warmup_bars=warmup_bars,
+        fetch_start=start_date - timedelta(
+            days=_warmup_calendar_days(timeframe, warmup_bars, candidates)
+        ),
+    )
+
+
+def backtest_range_validation_market(candidate: dict[str, Any]) -> str:
+    """Market whose data-provider limits apply to one candidate."""
+    if str(candidate.get("product_type") or "").strip().lower() == "direct_equity":
+        return str(candidate.get("underlying_market") or "USStock")
+    return str(candidate.get("market") or "")
+
+
+def backtest_warmup_days(timeframe: str, warmup_bars: int, candidates=()) -> int:
+    """Calendar days the backtest fetches before ``start_date`` for warmup."""
+    return _warmup_calendar_days(timeframe, warmup_bars, candidates)
 
 
 def _enforce_backtest_range(
@@ -873,15 +917,31 @@ def _enforce_backtest_range(
     warmup_bars: int,
     fetch_start: datetime,
 ) -> None:
+    violation = _backtest_range_violation(
+        candidates=candidates,
+        timeframe=timeframe,
+        start_date=start_date,
+        end_date=end_date,
+        warmup_bars=warmup_bars,
+        fetch_start=fetch_start,
+    )
+    if violation:
+        raise BacktestRangeLimitError(violation)
+
+
+def _backtest_range_violation(
+    *,
+    candidates: list[dict[str, Any]],
+    timeframe: str,
+    start_date: datetime,
+    end_date: datetime,
+    warmup_bars: int,
+    fetch_start: datetime,
+) -> dict[str, Any] | None:
     errors: list[dict[str, Any]] = []
     checked_markets: set[str] = set()
     for candidate in candidates:
-        market = str(candidate.get("market") or "")
-        validation_market = (
-            str(candidate.get("underlying_market") or "USStock")
-            if str(candidate.get("product_type") or "").strip().lower() == "direct_equity"
-            else market
-        )
+        validation_market = backtest_range_validation_market(candidate)
         if validation_market in checked_markets:
             continue
         checked_markets.add(validation_market)
@@ -897,7 +957,8 @@ def _enforce_backtest_range(
         if error:
             errors.append(error)
     if errors:
-        raise BacktestRangeLimitError(min(errors, key=lambda item: int(item["max_days"])))
+        return min(errors, key=lambda item: int(item["max_days"]))
+    return None
 
 
 def _instrument_member(item: InstrumentSpec) -> dict[str, Any]:
