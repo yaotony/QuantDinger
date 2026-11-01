@@ -57,6 +57,13 @@ def main() -> int:
         return 0
 
     text = os.environ.get("FAKE_CLAUDE_TEXT") or f"ECHO:{stdin}"
+    sequence = os.environ.get("FAKE_CLAUDE_TEXTS")
+    if sequence:
+        # One reply per invocation, selected by how many calls were recorded so far.
+        replies = json.loads(sequence)
+        with open(record, encoding="utf-8") as handle:
+            index = sum(1 for _ in handle) - 1
+        text = replies[min(index, len(replies) - 1)]
     if output_format == "stream-json":
         chunks = [text[i : i + 4] for i in range(0, len(text), 4)] or [""]
         print(json.dumps({"type": "system", "subtype": "init"}), flush=True)

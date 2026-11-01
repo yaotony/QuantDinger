@@ -9,7 +9,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from . import cli
+from . import cli, json_mode
 from .config import BridgeConfig
 from .errors import BridgeError, bad_request, unauthorized
 from .messages import build_prompt
@@ -117,24 +117,38 @@ class BridgeHandler(BaseHTTPRequestHandler):
         model = str(body.get("model") or config.default_model).strip()
         prompt, system_prompt = build_prompt(body.get("messages"))
         completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+        if json_mode.requested(body.get("response_format")):
+            result = json_mode.run(config, prompt=prompt, model=model, system_prompt=system_prompt)
+            if body.get("stream"):
+                self._stream_completion(source=iter([result.text]), result=result, model=model,
+                                        completion_id=completion_id)
+            else:
+                self._send_json(200, completion_payload(result, completion_id))
+            return
         if body.get("stream"):
-            self._stream_completion(config, prompt=prompt, model=model, system_prompt=system_prompt,
-                                    completion_id=completion_id)
+            stream = cli.CliStream(config, prompt=prompt, model=model, system_prompt=system_prompt)
+            self._stream_completion(source=stream, result=None, model=model, completion_id=completion_id)
             return
         result = cli.run_once(config, prompt=prompt, model=model, system_prompt=system_prompt)
         self._send_json(200, completion_payload(result, completion_id))
 
     def _stream_completion(
         self,
-        config: BridgeConfig,
         *,
-        prompt: str,
+        source: Any,
+        result: cli.CliResult | None,
         model: str,
-        system_prompt: str | None,
         completion_id: str,
     ) -> None:
-        stream = cli.CliStream(config, prompt=prompt, model=model, system_prompt=system_prompt)
+        """Send text from ``source`` as SSE chunks.
+
+        ``source`` is either a live ``cli.CliStream`` or an iterator over text that
+        was already produced, in which case ``result`` carries its metadata.
+        """
         created = int(time.time())
+
+        def final() -> cli.CliResult | None:
+            return result or getattr(source, "result", None)
         headers_sent = False
 
         def chunk(delta: dict[str, Any], finish_reason: str | None = None, **extra: Any) -> dict[str, Any]:
@@ -142,7 +156,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "id": completion_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": stream.result.model if stream.result else model,
+                "model": final().model if final() else model,
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
                 **extra,
             }
@@ -160,11 +174,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._sse(chunk({"role": "assistant", "content": ""}))
 
         try:
-            for text in stream:
+            for text in source:
                 send_headers()
                 self._sse(chunk({"content": text}))
             send_headers()
-            usage = stream.result.usage if stream.result else None
+            usage = final().usage if final() else None
             self._sse(chunk({}, "stop", usage=usage))
             self._sse_raw("[DONE]")
         except BridgeError as error:
@@ -174,7 +188,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._sse(error.to_payload())
             self._sse_raw("[DONE]")
         finally:
-            stream.close()
+            close = getattr(source, "close", None)
+            if close is not None:
+                close()
         self.close_connection = True
 
     def _sse(self, payload: dict[str, Any]) -> None:
