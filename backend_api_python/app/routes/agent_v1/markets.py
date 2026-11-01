@@ -7,6 +7,9 @@ from app.data.market_symbols_seed import (
     get_hot_symbols as seed_get_hot_symbols,
     search_symbols as seed_search_symbols,
 )
+from app.data_sources.factory import DataSourceFactory
+from app.services.backtest_jobs import parse_backtest_date
+from app.services.data_coverage import DataCoverageRequestError, describe_data_coverage
 from app.services.kline import KlineService
 from app.utils.agent_auth import (
     SCOPE_R, agent_required, instrument_allowed, market_allowed,
@@ -123,6 +126,66 @@ def klines():
         "count": len(rows),
         "klines": rows,
     })
+
+
+_MAX_COVERAGE_WARMUP_BARS = 1_000_000
+
+
+@agent_v1_bp.route("/data-coverage", methods=["GET"])
+@agent_required(SCOPE_R)
+def data_coverage():
+    """Earliest available bar, backtest range limit, and range feasibility.
+
+    Query params:
+        market, symbol, timeframe   (required)
+        exchange_id, market_type    (optional crypto venue scope)
+        start_date, end_date        (optional, YYYY-MM-DD; both or neither)
+        warmup_bars                 (optional, default 0)
+
+    The range verdict uses the same rule as POST /backtest/run, so a
+    feasible answer is not rejected by the submission precheck.
+    """
+    market_raw = (request.args.get("market") or "").strip()
+    symbol = (request.args.get("symbol") or "").strip()
+    timeframe = (request.args.get("timeframe") or "").strip()
+    if not market_raw or not symbol or not timeframe:
+        return error(400, "market, symbol and timeframe are required")
+    market = DataSourceFactory.normalize_market(market_raw)
+    if market not in DataSourceFactory._CANONICAL_MARKETS:
+        return error(400, f"Unsupported market: {market_raw}")
+    if not market_allowed(market):
+        return error(403, f"Market not allowed: {market}", http=403)
+    if not instrument_allowed(symbol):
+        return error(403, f"Instrument not allowed: {symbol}", http=403)
+
+    try:
+        start_date = parse_backtest_date(request.args.get("start_date"))
+        end_date = parse_backtest_date(request.args.get("end_date"))
+    except ValueError as exc:
+        return error(400, str(exc))
+
+    warmup_raw = (request.args.get("warmup_bars") or "0").strip()
+    try:
+        warmup_bars = int(warmup_raw)
+    except ValueError:
+        return error(400, "warmup_bars must be a non-negative integer")
+    if warmup_bars < 0 or warmup_bars > _MAX_COVERAGE_WARMUP_BARS:
+        return error(400, f"warmup_bars must be between 0 and {_MAX_COVERAGE_WARMUP_BARS}")
+
+    try:
+        coverage = describe_data_coverage(
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            exchange_id=(request.args.get("exchange_id") or "").strip(),
+            market_type=(request.args.get("market_type") or "").strip(),
+            start_date=start_date,
+            end_date=end_date,
+            warmup_bars=warmup_bars,
+        )
+    except DataCoverageRequestError as exc:
+        return error(400, str(exc))
+    return envelope(coverage)
 
 
 @agent_v1_bp.route("/price", methods=["GET"])

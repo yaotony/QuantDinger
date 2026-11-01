@@ -906,6 +906,49 @@ def rebalance(context, data):
 - <code>equityCurve</code>、回撤、胜率、Profit Factor 和 benchmark/excess return。
 - <code>dataProvenance</code> 和 <code>executionAssumptions</code>：数据来源与执行假设。
 
+### 交易诊断
+
+<code>closedTrades</code> 的每一笔都带有诊断字段，用来说明盈亏从哪里来。网页与 Agent API 读取的是同一份字段。
+
+| 字段 | 含义 |
+|---|---|
+| <code>r_basis</code> | 入场带有止损时为 <code>initial_stop_loss</code>，否则为 <code>not_applicable</code>。 |
+| <code>initial_stop_price</code> | 多头为 <code>entry_price × (1 − stop_loss_pct)</code>，空头为 <code>entry_price × (1 + stop_loss_pct)</code>；没有止损时为 <code>null</code>。 |
+| <code>initial_risk</code> | 以金额表示的 1R：<code>entry_price × stop_loss_pct × quantity</code>；没有止损时为 <code>null</code>。 |
+| <code>r_multiple</code> | 扣除手续费与滑点后的净 <code>profit</code> 除以 <code>initial_risk</code>；没有止损时为 <code>null</code>。 |
+| <code>mae</code> / <code>mfe</code> | 最大不利 / 最大有利偏移：持仓期间相对 <code>entry_price</code> 每单位价格最大的逆向 / 顺向波动，恒为非负。 |
+| <code>mae_pct</code> / <code>mfe_pct</code> | 同上偏移占 <code>entry_price</code> 的百分比。 |
+| <code>mae_r</code> / <code>mfe_r</code> | 同上偏移以 R 表示；没有止损时为 <code>null</code>。 |
+| <code>holding_seconds</code> | <code>exit_time − entry_time</code>，单位为秒。 |
+| <code>holding_bars</code> | 持仓期间走完的驱动周期 K 线数量。 |
+| <code>entry_slippage</code> / <code>exit_slippage</code> / <code>slippage_cost</code> | 分摊到本笔的开仓滑点、平仓滑点及两者合计。 |
+| <code>trading_cost</code> | <code>commission + slippage_cost</code>。 |
+| <code>profit_before_costs</code> | <code>profit + trading_cost</code>：以参考价、不计手续费与滑点时的结果。 |
+
+计算规则：
+
+- 1R 以该笔入场第一次带上的止损为准（订单上的 <code>stop_loss_pct</code> 或默认保护）。加仓不会重设 1R；风险以本笔回报的 <code>entry_price</code> 计算。移动止损、止盈与持仓时限不定义 1R。
+- MAE/MFE 以驱动周期为粒度：持仓期间每根已走完 K 线的最高/最低价，加上开仓与平仓成交价。平仓那根 K 线在平仓前的盘中波动不计入。
+- 滑点为以 K 线开盘价定价的成交（包括保护单平仓）的 <code>|成交价 − 参考价| × 数量</code>。限价成交与跳空限价成交不计模拟滑点。部分平仓时，开仓滑点与开仓手续费一样按比例分摊。
+- 网格交易使用配对网格的入场价与时间。
+
+汇总字段一律以完整的已平仓交易列表计算，早于历史存储或回传时对 <code>closedTrades</code> 的抽样缩减（<code>tradeDiagnosticsBasis == "all_closed_trades"</code>，<code>tradeDiagnosticsTradeCount</code> 为完整笔数）：
+
+| 字段 | 含义 |
+|---|---|
+| <code>averageR</code> | 有 <code>r_multiple</code> 的交易的平均 R；全部没有时为 <code>null</code>。 |
+| <code>rMultipleTradeCount</code> | 计入 <code>averageR</code> 的笔数。 |
+| <code>totalTradeCommission</code> / <code>totalSlippageCost</code> / <code>totalTradingCost</code> | 已平仓交易的手续费、滑点及合计（不含未平仓部位；<code>totalCommission</code> 仍涵盖所有成交）。 |
+| <code>grossProfitBeforeCosts</code> / <code>grossLossBeforeCosts</code> | 为正的 <code>profit_before_costs</code> 之和 / 为负者之和的绝对值。 |
+| <code>costToGrossProfitPct</code> | <code>totalTradingCost / grossProfitBeforeCosts × 100</code>；没有毛利时为 <code>null</code>。 |
+| <code>costToGrossLossPct</code> | <code>totalTradingCost / grossLossBeforeCosts × 100</code>；没有毛损时为 <code>null</code>。 |
+| <code>expectancyBeforeCosts</code> / <code>expectancyAfterCosts</code> | 每笔已平仓交易的平均 <code>profit_before_costs</code> / 平均净 <code>profit</code>；没有交易时为 <code>null</code>。 |
+| <code>averageHoldingSeconds</code>、<code>averageMaePct</code>、<code>averageMfePct</code> | 对应单笔字段的平均值。 |
+
+解读方式：<code>expectancyBeforeCosts</code> 为正但 <code>expectancyAfterCosts</code> 为负，代表优势被成本吃掉；<code>costToGrossProfitPct</code> 偏高通常是交易过于频繁或目标太小。亏损交易的 <code>r_multiple</code> 明显低于 −1，代表平仓价越过止损（跳空或滑点）。盈利交易 <code>mfe_r</code> 很大但 <code>r_multiple</code> 很小，代表回吐了浮盈；亏损交易的 <code>mae</code> 很小，代表止损可能设在正常波动之内。
+
+较早存储的回测没有诊断字段，需要重新回测才能取得。
+
 ### 成本与执行假设
 
 - 每次成交都会收取手续费。完整往返交易的已实现利润会同时扣除分摊后的开仓手续费和平仓手续费。

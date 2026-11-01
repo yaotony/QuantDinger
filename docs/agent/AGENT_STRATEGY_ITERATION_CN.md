@@ -4,6 +4,7 @@
 
 相關文件：
 
+- [QuantDinger Agent Skill](AGENT_SKILL_CN.md)：把這套流程、安全規則與防過度擬合規則包成可安裝的 `SKILL.md`，供 Claude Code、Codex、OpenClaw 使用。
 - [Agent Gateway 快速開始](AGENT_QUICKSTART_CN.md)：認證、Scope 與冪等。
 - [MCP 接入指南](MCP_SETUP_CN.md)：把 Agent 接上 MCP server。
 - [agent-openapi.json](agent-openapi.json)：機器可讀的介面契約。
@@ -62,6 +63,8 @@ curl -X POST http://localhost:8888/api/agent/v1/me/tokens \
 curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/whoami
 ```
+
+或一次檢查整個環境：`GET /api/agent/v1/environment`（`R` Scope；MCP 為 `check_environment`，另外會檢查連線與認證）。回報後端版本、Token 權限、是否只能操作模擬盤、回測同時執行上限與目前執行中的數量、各市場與週期的回測區間上限，以及 Token 到期時間。`checks` 中每一項的 `status` 是 `pass`、`warn` 或 `fail`，不是 `pass` 時附 `remediation` 修正建議，例如缺少 `B` 權限時請到 `/me/tokens` 重新建立 Token；`overall` 是最嚴重的狀態。回報不含 Token 本身或任何機密。
 
 ## 步驟 1：讀取撰寫規範與範本
 
@@ -123,7 +126,12 @@ curl -X POST http://localhost:8888/api/agent/v1/strategy-sources \
 
 ## 步驟 4：送出回測
 
-`/backtest/run` 接收的是源碼本身（不是 source id）。請送出與已儲存版本完全相同的程式碼。
+`/backtest/run` 必須擇一提供：
+
+- `sourceId`（源碼存檔後建議使用）：執行自己租戶已儲存的源碼。加上 `sourceVersion`（`GET /strategy-sources/{id}/versions` 回傳的 `version_no`）可指定版本快照；不帶就用最新版。指定其他租戶的源碼會回 404。
+- `code`：未存檔實驗用的內嵌源碼。
+
+兩者都帶或都不帶會回 400。使用 `sourceId` 時，伺服器在受理 job 當下就解析並鎖定版本，之後再存檔也不會改變排隊中 job 實際執行的程式碼。
 
 ```bash
 curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
@@ -131,7 +139,8 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: lab-bt-ema-v1-2024" \
   -d '{
-    "code": "<與已儲存版本相同的源碼>",
+    "sourceId": 12,
+    "sourceVersion": 1,
     "startDate": "2024-01-01",
     "endDate": "2024-12-31",
     "initialCapital": 10000,
@@ -142,14 +151,16 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
-可用欄位只有 `code`、`startDate`、`endDate`、`initialCapital`、`commission`、`slippage`、`leverageEnabled`、`leverage`、`params`、`instrumentRulesSnapshotId`；其他欄位會回 HTTP 400。送出成功回 HTTP 202，內含 `data.job_id` 與 `status: "queued"`。
+可用欄位只有 `code`、`sourceId`、`sourceVersion`、`startDate`、`endDate`、`initialCapital`、`commission`、`slippage`、`leverageEnabled`、`leverage`、`params`、`instrumentRulesSnapshotId`；其他欄位會回 HTTP 400。送出成功回 HTTP 202，內含 `data.job_id` 與 `status: "queued"`。使用 `sourceId` 時，回執與 job 結果還會帶 `strategySource: {sourceId, versionId, versionNo}`，也就是實際執行的版本。
 
 MCP 對應寫法：
 
 ```text
-submit_backtest(code=..., start_date="2024-01-01", end_date="2024-12-31",
+submit_backtest(source_id=12, source_version=1, start_date="2024-01-01", end_date="2024-12-31",
                 initial_capital=10000, params={...}, idempotency_key="lab-bt-ema-v1-2024")
 ```
+
+未存檔的實驗改傳 `code=...`，不要同時傳 `source_id`。
 
 同時執行的 job 有上限：每個租戶預設 4 個、每個 Token 預設 2 個。收到 HTTP 429 時，先等執行中的 job 結束再送。
 
@@ -173,7 +184,7 @@ MCP：`wait_for_job(job_id)` 會輪詢到結束狀態；`stream_job_until_done(j
 
 結束狀態有 `succeeded`、`failed`、`cancelled`：
 
-- `succeeded`：`result.runId` 是存進回測中心的歷史紀錄編號。請和 source id、版本一起記到迭代紀錄。
+- `succeeded`：`result.runId` 是存進回測中心的歷史紀錄編號。用 `sourceId` 送出的回測，`result.strategySource` 會記錄實際執行的 source id 與版本；請和 `runId` 一起記到迭代紀錄。
 - `failed`：`error` 可能是字串，第一行開頭就是錯誤代碼；若是結構化的失敗（例如執行時才發生的 `strategyV2.backtestRangeLimit`，常見於動態 universe），`error` 則是 `{code, message, details}` 物件。處理方式見[錯誤代碼](#錯誤代碼與處理方式)。
 - 用戶端逾時不代表 job 失敗。重送之前先查 `GET /jobs/{job_id}` 或 `GET /jobs?kind=backtest`。不再需要的 job 可用 `POST /jobs/{job_id}/cancel` 取消（B 權限、新的 idempotency key）。
 
@@ -252,6 +263,30 @@ warmup 換算的日曆天數（`warmupBars` 取自 manifest）：
 
 送出前先規劃區間：用 manifest 算出最大可選區間；使用者想看更長歷史時，改用較高週期或縮短長回看參數。
 
+### 送出前查詢資料涵蓋範圍
+
+不必自己手算，可以直接問伺服器。`GET /data-coverage`（R 權限，不建立 job、不計費；MCP：`get_data_coverage`）輸入 `market`、`symbol`、`timeframe`，可選 `exchange_id`／`market_type`，以及預計的 `start_date`、`end_date`（兩者要一起給）與 `warmup_bars`（manifest 的 `warmupBars`）：
+
+```bash
+curl -G -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  http://localhost:8888/api/agent/v1/data-coverage \
+  --data-urlencode "market=Crypto" --data-urlencode "symbol=BTC/USDT" \
+  -d timeframe=15m -d start_date=2023-01-01 -d end_date=2024-12-31 -d warmup_bars=200
+```
+
+```text
+get_data_coverage(market="Crypto", symbol="BTC/USDT", timeframe="15m",
+                  start_date="2023-01-01", end_date="2024-12-31", warmup_bars=200)
+```
+
+回應內容：
+
+- `earliest_bar`：資料來源最早可用的 K 棒。資料來源無法提供時 `status` 為 `unknown`（`time` 為 `null`），不會猜測日期。目前只有走 Binance 的加密貨幣（`exchange_id=binance`）能回報。
+- `limits`：`max_days`、`warmup_days`、`max_selected_days`（扣掉 warmup 後 `endDate - startDate` 的上限）與 `warmup_fits`（光 warmup 就超限時為 false）。
+- `evaluation`（有給日期才有）：`feasible`、`range_check`（`ok` 與 `violation`；`violation` 就是送出回測時會拿到的 `details`）、`history_check`（對照最早 K 棒的結果：`ok`、`insufficient` 或 `unknown`），以及 `recommended_start`／`recommended_end`：保留結束日、且兩項檢查都通過的一組日期；找不到時為 `null`。
+
+`range_check` 和 `/backtest/run` 的預檢使用同一份規則，它判定可行的區間，送出時不會因長度被拒。源碼宣告多個週期或標的時逐一查詢，以最嚴格的結果為準。動態 universe 仍在執行時檢查。
+
 ## 錯誤代碼與處理方式
 
 ### 送出時就被拒絕（`/backtest/run` 的 HTTP 回應）
@@ -260,7 +295,11 @@ warmup 換算的日曆天數（`warmupBars` 取自 manifest）：
 | --- | --- | --- |
 | 400 `strategyV2.*` 編譯訊息 | 源碼無法編譯 | 修正源碼，用 `/strategy-sources/compile` 重新編譯 |
 | 400 `strategyV2.backtestRangeLimit` | 抓取區間（區間＋warmup）超過該市場／週期上限；不會建立 job，也不計費 | 改用 `details.recommended_start`／`details.recommended_end`，或依[上限表](#回測區間上限)縮短區間。`details` 也含 `max_days` 與 `warmup_days`。若 `details.recommendation_available` 為 false（建議日期為 `null`），代表光 warmup 就超限：降低 `set_warmup`／回看長度，或改用較高週期 |
-| 400 `Unsupported backtest fields: ...` | 請求含不支援的欄位（例如 `sourceId`） | 只送文件列出的欄位 |
+| 400 `Unsupported backtest fields: ...` | 請求含不支援的欄位（例如 `strategyId`） | 只送文件列出的欄位 |
+| 400 `Provide either code or sourceId, not both` / `code or sourceId is required` / `sourceVersion requires sourceId` | 源碼指定方式不正確 | `code` 與 `sourceId` 擇一送出 |
+| 404 `Strategy source not found` / `Strategy source version not found` | 源碼不存在或屬於其他租戶，或版本號不存在 | 用 `GET /strategy-sources` 與 `GET /strategy-sources/{id}/versions` 查詢 |
+| 403 `Strategy source code is hidden` | 市集購買、程式碼隱藏的源碼 | 改從回測中心介面回測 |
+| 409 `Strategy source has no saved version` | 舊源碼沒有版本快照 | 先存檔一次（`PATCH /strategy-sources/{id}`）建立版本 |
 | 400 `startDate and endDate are required`／`Invalid date` | 日期缺少或格式錯誤 | 使用 `YYYY-MM-DD` |
 | 400 `Idempotency-Key header is required ...` | 沒帶 key | 加上唯一的 `Idempotency-Key` |
 | 409 `Idempotency-Key was already used with a different request` | 同一個 key 用在不同內容 | 每個不同請求產生新的 key |

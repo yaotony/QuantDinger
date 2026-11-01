@@ -162,6 +162,138 @@
           }
         }
       },
+      "DataCoverage": {
+        "type": "object",
+        "description": "Returned in `data` by GET /data-coverage. The range verdict is produced by the same rule as the POST /backtest/run precheck and the job-time check.",
+        "required": ["market", "symbol", "timeframe", "exchange_id", "market_type", "earliest_bar", "limits", "evaluation"],
+        "properties": {
+          "market":      { "type": "string" },
+          "symbol":      { "type": "string" },
+          "timeframe":   { "type": "string", "description": "Canonical strategy frequency (for example 15m, 1h, 1d)" },
+          "exchange_id": { "type": "string" },
+          "market_type": { "type": "string" },
+          "earliest_bar": {
+            "type": "object",
+            "required": ["status", "time", "timestamp"],
+            "properties": {
+              "status":    { "type": "string", "enum": ["known", "unknown"], "description": "`unknown` when the data source cannot report its first candle; no date is estimated" },
+              "time":      { "type": "string", "format": "date-time", "nullable": true },
+              "timestamp": { "type": "integer", "nullable": true, "description": "Unix seconds" }
+            }
+          },
+          "limits": {
+            "type": "object",
+            "required": ["validation_market", "max_days", "max_range", "reason", "warmup_bars", "warmup_days", "max_selected_days", "warmup_fits"],
+            "properties": {
+              "validation_market": { "type": "string", "description": "Market whose provider limit applies (catalog underlying market for tokenized equities)" },
+              "max_days":          { "type": "integer", "description": "Maximum calendar days per fetch, warmup included" },
+              "max_range":         { "type": "string", "example": "1 year" },
+              "reason":            { "type": "string" },
+              "warmup_bars":       { "type": "integer" },
+              "warmup_days":       { "type": "integer", "description": "Calendar days fetched before start_date for warmup" },
+              "max_selected_days": { "type": "integer", "description": "Largest end_date minus start_date in days once warmup is reserved" },
+              "warmup_fits":       { "type": "boolean", "description": "False when the warmup alone exceeds max_days" }
+            }
+          },
+          "evaluation": {
+            "nullable": true,
+            "description": "Null unless start_date and end_date are given.",
+            "allOf": [{ "$ref": "#/components/schemas/DataCoverageEvaluation" }]
+          }
+        }
+      },
+      "DataCoverageEvaluation": {
+        "type": "object",
+        "required": ["start_date", "end_date", "feasible", "range_check", "history_check", "recommended_start", "recommended_end"],
+        "properties": {
+          "start_date": { "type": "string", "format": "date" },
+          "end_date":   { "type": "string", "format": "date" },
+          "feasible":   { "type": "boolean", "description": "range_check.ok and history_check.status is not `insufficient`" },
+          "range_check": {
+            "type": "object",
+            "required": ["ok", "violation"],
+            "properties": {
+              "ok":        { "type": "boolean", "description": "Same verdict as the POST /backtest/run range precheck" },
+              "violation": { "nullable": true, "description": "Identical to the `details` the backtest submission would return", "allOf": [{ "$ref": "#/components/schemas/BacktestRangeLimitDetails" }] }
+            }
+          },
+          "history_check": {
+            "type": "object",
+            "required": ["status", "fetch_start", "earliest_start"],
+            "properties": {
+              "status":         { "type": "string", "enum": ["ok", "insufficient", "unknown"], "description": "`unknown` when the earliest bar is unknown" },
+              "fetch_start":    { "type": "string", "format": "date", "description": "start_date minus warmup_days" },
+              "earliest_start": { "type": "string", "format": "date", "nullable": true, "description": "First start_date whose warmup fits after the earliest bar" }
+            }
+          },
+          "recommended_start": { "type": "string", "format": "date", "nullable": true, "description": "Feasible start that keeps end_date; null when feasible or no fix exists" },
+          "recommended_end":   { "type": "string", "format": "date", "nullable": true }
+        }
+      },
+      "EnvironmentCheck": {
+        "type": "object",
+        "required": ["id", "status", "message", "remediation"],
+        "properties": {
+          "id":          { "type": "string", "enum": ["scopes", "paper_only", "backtest_quota", "backtest_range_limits", "token_expiry"], "description": "MCP check_environment also emits connectivity, authentication, and version" },
+          "status":      { "type": "string", "enum": ["pass", "warn", "fail"] },
+          "message":     { "type": "string" },
+          "remediation": { "type": "string", "nullable": true, "description": "Suggested fix; null when the check passes" }
+        }
+      },
+      "BacktestRangeLimit": {
+        "type": "object",
+        "required": ["max_days", "max_range", "reason"],
+        "properties": {
+          "max_days":  { "type": "integer", "description": "Maximum calendar days per fetch, warmup included" },
+          "max_range": { "type": "string", "example": "1 year" },
+          "reason":    { "type": "string" }
+        }
+      },
+      "EnvironmentReport": {
+        "type": "object",
+        "description": "Returned in `data` by GET /environment. Never contains the token value, hash, or id.",
+        "required": ["service", "api_version", "app_version", "overall", "token", "backtest_quota", "backtest_range_limits", "checks"],
+        "properties": {
+          "service":     { "type": "string" },
+          "api_version": { "type": "string", "example": "v1" },
+          "app_version": { "type": "string", "description": "QuantDinger backend release version" },
+          "overall":     { "type": "string", "enum": ["pass", "warn", "fail"], "description": "Most severe check status" },
+          "token": {
+            "type": "object",
+            "required": ["agent_name", "scopes", "markets", "instruments", "paper_only", "rate_limit_per_min", "expires_at"],
+            "properties": {
+              "agent_name":         { "type": "string", "nullable": true },
+              "scopes":             { "type": "array", "items": { "type": "string", "enum": ["R","W","B","N","C","T"] } },
+              "markets":            { "type": "array", "items": { "type": "string" } },
+              "instruments":        { "type": "array", "items": { "type": "string" } },
+              "paper_only":         { "type": "boolean" },
+              "rate_limit_per_min": { "type": "integer" },
+              "expires_at":         { "type": "string", "format": "date-time", "nullable": true }
+            }
+          },
+          "backtest_quota": {
+            "type": "object",
+            "required": ["tenant_limit", "tenant_active", "token_limit", "token_active", "available"],
+            "properties": {
+              "tenant_limit":  { "type": "integer", "description": "Max queued/running agent jobs per tenant" },
+              "tenant_active": { "type": "integer", "nullable": true, "description": "Null when the count is unavailable" },
+              "token_limit":   { "type": "integer", "description": "Max queued/running agent jobs per token" },
+              "token_active":  { "type": "integer", "nullable": true },
+              "available":     { "type": "integer", "nullable": true, "description": "Backtests that can be submitted now before HTTP 429" }
+            }
+          },
+          "backtest_range_limits": {
+            "type": "object",
+            "required": ["warmup_included", "default", "markets"],
+            "properties": {
+              "warmup_included": { "type": "boolean" },
+              "default": { "type": "object", "description": "Timeframe to limit, for markets without an override", "additionalProperties": { "$ref": "#/components/schemas/BacktestRangeLimit" } },
+              "markets": { "type": "object", "description": "Market to timeframe to limit overrides, filtered to the token market allowlist", "additionalProperties": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/BacktestRangeLimit" } } }
+            }
+          },
+          "checks": { "type": "array", "items": { "$ref": "#/components/schemas/EnvironmentCheck" } }
+        }
+      },
       "TokenIssued": {
         "type": "object",
         "properties": {
@@ -182,9 +314,16 @@
       "BacktestRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["code","startDate","endDate"],
+        "required": ["startDate","endDate"],
+        "description": "Provide exactly one of `code` (inline source) or `sourceId` (a saved, tenant-owned strategy source). `sourceVersion` selects a version of that source; omit it to use the latest version.",
+        "oneOf": [
+          { "required": ["code"], "not": { "anyOf": [ { "required": ["sourceId"] }, { "required": ["sourceVersion"] } ] } },
+          { "required": ["sourceId"], "not": { "required": ["code"] } }
+        ],
         "properties": {
-          "code":             { "type": "string", "description": "Strategy API V2 Python code using initialize(context) and a runtime handler" },
+          "code":             { "type": "string", "description": "Strategy API V2 Python code using initialize(context) and a runtime handler. Mutually exclusive with sourceId." },
+          "sourceId":         { "type": "integer", "minimum": 1, "description": "Saved strategy source owned by the caller's tenant. Another tenant's source returns 404." },
+          "sourceVersion":    { "type": "integer", "minimum": 1, "description": "Per-source version number (`version_no` from GET /strategy-sources/{id}/versions). Requires sourceId; defaults to the latest version." },
           "startDate":        { "type": "string", "format": "date", "example": "2024-01-01" },
           "endDate":          { "type": "string", "format": "date", "example": "2024-12-31" },
           "initialCapital":   { "type": "number", "minimum": 0, "exclusiveMinimum": true, "default": 10000 },
@@ -192,7 +331,18 @@
           "slippage":         { "type": "number", "nullable": true },
           "leverageEnabled":  { "type": "boolean", "default": false },
           "leverage":         { "type": "number", "default": 1 },
-          "params":           { "type": "object" }
+          "params":           { "type": "object" },
+          "instrumentRulesSnapshotId": { "type": "string" }
+        }
+      },
+      "BacktestStrategySource": {
+        "type": "object",
+        "description": "The saved strategy source version a backtest ran. Returned on the 202 receipt and in the job result as `strategySource` when the request used sourceId.",
+        "required": ["sourceId", "versionId", "versionNo"],
+        "properties": {
+          "sourceId":  { "type": "integer" },
+          "versionId": { "type": "integer", "description": "Immutable version snapshot id" },
+          "versionNo": { "type": "integer", "description": "Per-source version number" }
         }
       },
       "StrategyDeploymentRequest": {
@@ -322,6 +472,25 @@
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Envelope" } } } } }
       }
     },
+    "/api/agent/v1/environment": {
+      "get": {
+        "summary": "Agent environment readiness report",
+        "description": "One-call readiness report for the calling token: backend version, scopes, paper-only mode, backtest concurrency quota (limits and active jobs), backtest range limits by market and timeframe, and token expiry. Each check is pass/warn/fail with a remediation hint. The token value, hash, and id are never returned. Read-only; no job or billing. The MCP tool check_environment adds connectivity and authentication checks.",
+        "x-scope-class": "R",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": {
+              "allOf": [
+                { "$ref": "#/components/schemas/Envelope" },
+                { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/EnvironmentReport" } } }
+              ]
+            } } }
+          },
+          "401": { "description": "Missing, invalid, expired, or revoked token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/api/agent/v1/markets": {
       "get": {
         "summary": "List markets the token is allowed to query",
@@ -353,6 +522,36 @@
           { "in": "query", "name": "before_time", "required": false, "schema": { "type": "integer", "description": "unix seconds" } }
         ],
         "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/data-coverage": {
+      "get": {
+        "summary": "Data coverage and backtest range feasibility",
+        "description": "Earliest available bar for the data source, the market/timeframe backtest range limit (warmup included), and, when start_date and end_date are given, whether the range is feasible with suggested dates. Uses the same range/warmup rule as POST /backtest/run. Read-only; no job or billing.",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "query", "name": "market",      "required": true,  "schema": { "type": "string" } },
+          { "in": "query", "name": "symbol",      "required": true,  "schema": { "type": "string" } },
+          { "in": "query", "name": "timeframe",   "required": true,  "schema": { "type": "string", "enum": ["1m","3m","5m","15m","30m","1h","4h","1d","1w"] }, "description": "Case-insensitive; 1H/1D are accepted" },
+          { "in": "query", "name": "exchange_id", "required": false, "schema": { "type": "string" }, "description": "Crypto venue scope; the earliest bar is only reported by venues that expose it" },
+          { "in": "query", "name": "market_type", "required": false, "schema": { "type": "string", "enum": ["spot","swap"] } },
+          { "in": "query", "name": "start_date",  "required": false, "schema": { "type": "string", "format": "date" }, "description": "Provide together with end_date" },
+          { "in": "query", "name": "end_date",    "required": false, "schema": { "type": "string", "format": "date" } },
+          { "in": "query", "name": "warmup_bars", "required": false, "schema": { "type": "integer", "minimum": 0, "maximum": 1000000, "default": 0 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": {
+              "allOf": [
+                { "$ref": "#/components/schemas/Envelope" },
+                { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/DataCoverage" } } }
+              ]
+            } } }
+          },
+          "400": { "description": "Missing or invalid market, symbol, timeframe, dates, or warmup_bars", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "Market or instrument not in token allowlist" }
+        }
       }
     },
     "/api/agent/v1/price": {
@@ -531,12 +730,34 @@
         "parameters": [
           { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
         ],
-        "description": "Compiles the strategy and checks the date range plus indicator warmup against the market/timeframe limit before a job is accepted or billed. An oversized range returns 400 with `message` `strategyV2.backtestRangeLimit` and `details` containing the limit, warmup days, and suggested dates.",
+        "description": "Runs either inline `code` or a saved strategy source (`sourceId`, optional `sourceVersion`; latest version when omitted). The resolved version is pinned at submit time and reported as `strategySource` on the receipt and the job result. Compiles the strategy and checks the date range plus indicator warmup against the market/timeframe limit before a job is accepted or billed. An oversized range returns 400 with `message` `strategyV2.backtestRangeLimit` and `details` containing the limit, warmup days, and suggested dates.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BacktestRequest" } } } },
         "responses": {
-          "202": { "description": "Queued" },
+          "202": {
+            "description": "Queued. Carries `strategySource` when the request used sourceId.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "job_id": { "type": "string" },
+                        "status": { "type": "string" },
+                        "strategySource": { "$ref": "#/components/schemas/BacktestStrategySource" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": { "description": "Market or instrument not allowed by the token, or the strategy source code is hidden" },
+          "404": { "description": "Strategy source or version not found for this tenant (including another tenant's source)" },
+          "409": { "description": "Strategy source has no saved version" },
           "400": {
-            "description": "Invalid request, compile failure, or range/warmup limit exceeded (`details` is `BacktestRangeLimitDetails`)",
+            "description": "Invalid request (including both or neither of code/sourceId), compile failure, or range/warmup limit exceeded (`details` is `BacktestRangeLimitDetails`)",
             "content": {
               "application/json": {
                 "schema": {

@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 60
+    assert len(fresh_module.MCP_TOOL_NAMES) == 62
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
@@ -80,6 +80,121 @@ def test_health_success_stays_success(fresh_module, monkeypatch):
         monkeypatch.setattr(fresh_module, "_public_client", client)
         result = asyncio.run(fresh_module.mcp.call_tool("check_health", {}))
     assert not isinstance(result, CallToolResult) or result.isError is False
+
+
+_ENVIRONMENT = {
+    "service": "quantdinger-agent-gateway",
+    "api_version": "v1",
+    "app_version": "1.2.3",
+    "overall": "fail",
+    "token": {"agent_name": "example", "scopes": ["R"], "paper_only": True},
+    "backtest_quota": {"tenant_limit": 4, "tenant_active": 0, "token_limit": 2,
+                       "token_active": 0, "available": 2},
+    "backtest_range_limits": {"warmup_included": True, "default": {}, "markets": {}},
+    "checks": [
+        {"id": "scopes", "status": "fail", "message": "B scope is missing",
+         "remediation": "Issue a new token via POST /api/agent/v1/me/tokens"},
+        {"id": "paper_only", "status": "pass", "message": "paper", "remediation": None},
+    ],
+}
+
+
+def _environment_client(health_response, environment_response):
+    seen = []
+
+    def respond(request):
+        seen.append((request.url.path, request.headers.get("Authorization")))
+        if request.url.path.endswith("/health"):
+            return health_response(request)
+        return environment_response(request)
+
+    transport = httpx.MockTransport(respond)
+    return seen, transport
+
+
+def test_check_environment_merges_gateway_checks(monkeypatch, fresh_module):
+    seen, transport = _environment_client(
+        lambda _: httpx.Response(200, json={"status": "ok", "version": "v1"}),
+        lambda _: httpx.Response(200, json={"code": 0, "message": "ok", "data": _ENVIRONMENT}),
+    )
+    with httpx.Client(base_url="http://fixture.test", transport=transport) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        monkeypatch.setattr(fresh_module, "_public_client", client)
+        out = fresh_module.check_environment()
+
+    assert [path for path, _ in seen] == ["/api/agent/v1/health", "/api/agent/v1/environment"]
+    ids = [item["id"] for item in out["checks"]]
+    assert ids == ["connectivity", "authentication", "version", "scopes", "paper_only"]
+    checks = {item["id"]: item for item in out["checks"]}
+    assert checks["version"]["status"] == "pass" and "1.2.3" in checks["version"]["message"]
+    assert checks["scopes"]["status"] == "fail"
+    assert "/me/tokens" in checks["scopes"]["remediation"]
+    assert out["overall"] == "fail"
+    assert out["backend"] == {"api_version": "v1", "app_version": "1.2.3"}
+    assert out["backtest_quota"]["available"] == 2
+    assert "backtest_range_limits" in out and out["token"]["scopes"] == ["R"]
+
+    tools = {tool.name: tool for tool in asyncio.run(fresh_module.mcp.list_tools())}
+    assert tools["check_environment"].annotations.readOnlyHint is True
+
+
+def test_check_environment_reports_unreachable_backend(monkeypatch, fresh_module):
+    def down(request):
+        raise httpx.ConnectError("connection failed to qd_agent_test_token", request=request)
+
+    seen, transport = _environment_client(down, down)
+    with httpx.Client(base_url="http://fixture.test", transport=transport) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        monkeypatch.setattr(fresh_module, "_public_client", client)
+        out = fresh_module.check_environment()
+
+    assert [path for path, _ in seen] == ["/api/agent/v1/health"]
+    assert out["overall"] == "fail"
+    assert [item["id"] for item in out["checks"]] == ["connectivity"]
+    assert "QUANTDINGER_BASE_URL" in out["checks"][0]["remediation"]
+    assert "qd_agent_test_token" not in json.dumps(out)
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    (401, "fail"), (403, "fail"), (404, "fail"), (429, "warn"), (500, "fail"),
+])
+def test_check_environment_maps_gateway_errors(monkeypatch, fresh_module, status, expected):
+    _, transport = _environment_client(
+        lambda _: httpx.Response(200, json={"status": "ok"}),
+        lambda _: httpx.Response(status, json={"code": status, "message": "denied"}),
+    )
+    with httpx.Client(base_url="http://fixture.test", transport=transport) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        monkeypatch.setattr(fresh_module, "_public_client", client)
+        out = fresh_module.check_environment()
+
+    auth = out["checks"][1]
+    assert auth["id"] == "authentication"
+    assert auth["status"] == expected
+    assert auth["remediation"]
+    assert out["overall"] == expected
+    if status == 401:
+        assert "/me/tokens" in auth["remediation"]
+
+
+def test_check_environment_never_outputs_the_token(monkeypatch, fresh_module):
+    """Even a backend echoing the token back must not leak it through the report."""
+    leaky = json.loads(json.dumps(_ENVIRONMENT))
+    leaky["token"]["agent_name"] = "agent qd_agent_test_token"
+    leaky["token"]["access_token"] = "qd_agent_test_token"
+    leaky["checks"][0]["message"] = "Bearer qd_agent_test_token rejected"
+    _, transport = _environment_client(
+        lambda _: httpx.Response(200, json={"status": "ok"}),
+        lambda _: httpx.Response(200, json={"code": 0, "data": leaky}),
+    )
+    with httpx.Client(base_url="http://fixture.test", transport=transport) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        monkeypatch.setattr(fresh_module, "_public_client", client)
+        result = asyncio.run(fresh_module.mcp.call_tool("check_environment", {}))
+
+    text = result[0].text if isinstance(result, (list, tuple)) else result.content[0].text
+    assert "qd_agent_test_token" not in text
+    assert json.loads(text)["overall"] == "fail"
 
 
 def test_mcp_tools_are_actually_registered(fresh_module):
@@ -291,6 +406,64 @@ def test_submit_backtest_uses_strategy_v2_payload(monkeypatch, fresh_module):
     assert captured["headers"] == {"Idempotency-Key": "same-key"}
 
 
+def _capture_backtest_post(monkeypatch, fresh_module) -> dict:
+    captured: dict = {}
+
+    def fake_post(path, json=None, headers=None):
+        captured["path"] = path
+        captured["json"] = json
+        return {"job_id": "job-test"}
+
+    monkeypatch.setattr(fresh_module, "_post", fake_post)
+    return captured
+
+
+def test_submit_backtest_by_source_id_sends_no_code(monkeypatch, fresh_module):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_backtest(
+        start_date="2024-01-01",
+        end_date="2024-06-30",
+        source_id=11,
+        source_version=2,
+        idempotency_key="source-run",
+    )
+
+    assert captured["path"] == "/api/agent/v1/backtest/run"
+    assert captured["json"]["sourceId"] == 11
+    assert captured["json"]["sourceVersion"] == 2
+    assert "code" not in captured["json"]
+
+
+def test_submit_backtest_by_source_id_defaults_to_latest(monkeypatch, fresh_module):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_backtest(
+        start_date="2024-01-01", end_date="2024-06-30", source_id=11, idempotency_key="latest",
+    )
+
+    assert captured["json"]["sourceId"] == 11
+    assert "sourceVersion" not in captured["json"]
+
+
+@pytest.mark.parametrize(("kwargs", "match"), [
+    ({"code": "def initialize(context):\n    pass\n", "source_id": 11}, "exactly one"),
+    ({}, "exactly one"),
+    ({"code": "def initialize(context):\n    pass\n", "source_version": 1}, "requires source_id"),
+    ({"source_id": 0}, "positive integer"),
+    ({"source_id": True}, "positive integer"),
+    ({"source_id": 11, "source_version": -1}, "positive integer"),
+])
+def test_submit_backtest_rejects_invalid_source_selection(monkeypatch, fresh_module, kwargs, match):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    with pytest.raises(ValueError, match=match):
+        fresh_module.submit_backtest(
+            start_date="2024-01-01", end_date="2024-06-30", idempotency_key="bad", **kwargs,
+        )
+    assert captured == {}
+
+
 def test_submit_backtest_returns_range_limit_details_verbatim(monkeypatch, fresh_module):
     details = {
         "error_type": "BACKTEST_RANGE_LIMIT",
@@ -321,6 +494,37 @@ def test_submit_backtest_returns_range_limit_details_verbatim(monkeypatch, fresh
         )
 
     assert out == {"error": True, "status": 400, "body": body}
+
+
+def test_get_data_coverage_forwards_query_and_is_read_only(monkeypatch, fresh_module):
+    seen = {}
+
+    def respond(request):
+        seen["path"] = request.url.path
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"code": 0, "message": "ok", "data": {
+            "earliest_bar": {"status": "unknown", "time": None, "timestamp": None},
+            "evaluation": {"feasible": False, "recommended_start": "2024-01-02"},
+        }})
+
+    with httpx.Client(base_url="http://fixture.test", transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        out = fresh_module.get_data_coverage(
+            "Crypto", "BTC/USDT", "15m",
+            start_date="2023-01-01", end_date="2024-12-31", warmup_bars=200,
+            exchange_id="binance", market_type="spot",
+        )
+
+    assert seen["path"] == "/api/agent/v1/data-coverage"
+    assert seen["params"] == {
+        "market": "Crypto", "symbol": "BTC/USDT", "timeframe": "15m",
+        "start_date": "2023-01-01", "end_date": "2024-12-31", "warmup_bars": "200",
+        "exchange_id": "binance", "market_type": "spot",
+    }
+    assert out["earliest_bar"]["status"] == "unknown"
+
+    tools = {tool.name: tool for tool in asyncio.run(fresh_module.mcp.list_tools())}
+    assert tools["get_data_coverage"].annotations.readOnlyHint is True
 
 
 def test_submit_backtest_cost_defaults_are_owned_by_backend(fresh_module):

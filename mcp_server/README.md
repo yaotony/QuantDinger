@@ -37,7 +37,9 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 | Tool group | Scope | Purpose |
 |---|---:|---|
 | `whoami`, `check_health` | R/public | Identity, allowlists, and liveness |
+| `check_environment` | R | One-call readiness check before starting work: connectivity, backend version, authentication, token scopes, paper-only mode, backtest concurrency quota (limit and active jobs), range limits by market and timeframe, and token expiry. Each entry in `checks` is `pass`/`warn`/`fail` with a `remediation` hint, and `overall` is the worst status. The report never contains the token or other secrets |
 | `list_markets`, `search_symbols`, `get_klines`, `get_price` | R | Market discovery and data |
+| `get_data_coverage` | R | Earliest available bar (`unknown` when the source cannot report it), backtest range limit including warmup, and range feasibility with suggested dates; same rule as `submit_backtest` |
 | Universe and factor tools | R | Point-in-time research inputs |
 | `list_watchlist`, `add_watchlist`, `remove_watchlist` | R/W | Watchlist workspace |
 | Indicator authoring, validation, save, link, and read tools | R/W | Chart-only indicators |
@@ -92,6 +94,18 @@ submit_backtest(
   initial_capital=10000,
   params={"lookback": 40},
   idempotency_key="btc-momentum-2025"
+)
+```
+
+Or backtest a saved source without resending code. Pass exactly one of `code` or `source_id`; `source_version` pins a version number and defaults to the latest. The receipt and job result report the version that ran as `strategySource`:
+
+```text
+submit_backtest(
+  source_id=12,
+  source_version=3,
+  start_date="2025-01-01",
+  end_date="2025-12-31",
+  idempotency_key="source-run-v3"
 )
 ```
 
