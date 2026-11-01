@@ -171,7 +171,7 @@ MCP：`wait_for_job(job_id)` 會輪詢到結束狀態；`stream_job_until_done(j
 結束狀態有 `succeeded`、`failed`、`cancelled`：
 
 - `succeeded`：`result.runId` 是存進回測中心的歷史紀錄編號。請和 source id、版本一起記到迭代紀錄。
-- `failed`：`error` 第一行開頭就是錯誤代碼（例如 `strategyV2.backtestRangeLimit`）。區間超限時，即時串流的 `failed` progress 事件還會附上結構化的 `failure` 物件。處理方式見[錯誤代碼](#錯誤代碼與處理方式)。
+- `failed`：`error` 可能是字串，第一行開頭就是錯誤代碼；若是結構化的失敗（例如執行時才發生的 `strategyV2.backtestRangeLimit`，常見於動態 universe），`error` 則是 `{code, message, details}` 物件。處理方式見[錯誤代碼](#錯誤代碼與處理方式)。
 - 用戶端逾時不代表 job 失敗。重送之前先查 `GET /jobs/{job_id}` 或 `GET /jobs?kind=backtest`。不再需要的 job 可用 `POST /jobs/{job_id}/cancel` 取消（B 權限、新的 idempotency key）。
 
 ## 步驟 6：診斷並迭代
@@ -242,6 +242,7 @@ warmup 換算的日曆天數（`warmupBars` 取自 manifest）：
 | 回應 | 意思 | 處理方式 |
 | --- | --- | --- |
 | 400 `strategyV2.*` 編譯訊息 | 源碼無法編譯 | 修正源碼，用 `/strategy-sources/compile` 重新編譯 |
+| 400 `strategyV2.backtestRangeLimit` | 抓取區間（區間＋warmup）超過該市場／週期上限；不會建立 job，也不計費 | 改用 `details.recommended_start`／`details.recommended_end`，或依[上限表](#回測區間上限)縮短區間。`details` 也含 `max_days` 與 `warmup_days`。若 `details.recommendation_available` 為 false（建議日期為 `null`），代表光 warmup 就超限：降低 `set_warmup`／回看長度，或改用較高週期 |
 | 400 `Unsupported backtest fields: ...` | 請求含不支援的欄位（例如 `sourceId`） | 只送文件列出的欄位 |
 | 400 `startDate and endDate are required`／`Invalid date` | 日期缺少或格式錯誤 | 使用 `YYYY-MM-DD` |
 | 400 `Idempotency-Key header is required ...` | 沒帶 key | 加上唯一的 `Idempotency-Key` |
@@ -253,11 +254,11 @@ warmup 換算的日曆天數（`warmupBars` 取自 manifest）：
 | 402 `INSUFFICIENT_CREDITS`（或其他計費代碼） | 回測點數不足或計費政策拒絕 | 回報給使用者，不要迴圈重試 |
 | 503 `BILLING_OR_JOB_UNAVAILABLE`／`AGENT_JOB_DISPATCH_FAILED` | job 基礎設施暫時無法使用 | 稍後用同一個 idempotency key 重試 |
 
-### job 失敗（`status: "failed"`，代碼在 `error` 開頭）
+### job 失敗（`status: "failed"`，代碼在 `error` 開頭或 `error.code`）
 
 | 代碼 | 意思 | 處理方式 |
 | --- | --- | --- |
-| `strategyV2.backtestRangeLimit` | 抓取區間（區間＋warmup）超過該市場／週期上限 | 依[上限表](#回測區間上限)縮短區間；串流的 `failure` 物件含 `max_days`、`fetch_days`、`warmup_days`、`recommended_start`、`recommended_end`。若 `recommendation_available` 為 false，代表光 warmup 就超限：降低 `set_warmup`／回看長度，或改用較高週期 |
+| `strategyV2.backtestRangeLimit` | 執行時才發現抓取區間（區間＋warmup）超過該市場／週期上限（一般會在送出時就被拒絕） | 依[上限表](#回測區間上限)縮短區間；`error.details` 含 `max_days`、`fetch_days`、`warmup_days`、`recommended_start`、`recommended_end`。若 `recommendation_available` 為 false，代表光 warmup 就超限：降低 `set_warmup`／回看長度，或改用較高週期 |
 | `strategyV2.insufficientWarmupData:SYMBOL@freq=have/need` | `startDate` 之前的 K 線數少於 `warmupBars`（靜態 universe） | 把 `startDate` 往後移、降低 `set_warmup`，或換歷史較長的標的。動態 universe 不會失敗，而是略過該標的並列在 `symbolsSkipped` |
 | `strategyV2.invalidDateRange` | `endDate` 沒有晚於 `startDate` | 修正日期 |
 | `strategyV2.backtestRangeEmpty` | 選定區間內沒有任何 K 線 | 選有交易資料的區間 |

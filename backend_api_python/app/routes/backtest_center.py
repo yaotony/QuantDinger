@@ -209,12 +209,14 @@ def _public_backtest_job(row: dict[str, Any] | None) -> dict[str, Any] | None:
     billing = row.get("billing")
     if billing is None and isinstance(request_payload, dict):
         billing = request_payload.get("__billing")
+    error_text, failure = agent_jobs.legacy_job_error(row.get("error"))
     return {
         "jobId": row.get("job_id"),
         "status": row.get("status"),
         "progress": progress or {},
         "result": result,
-        "error": row.get("error"),
+        "error": error_text,
+        "failure": failure,
         "billing": billing,
         "createdAt": row.get("created_at"),
         "startedAt": row.get("started_at"),

@@ -11,7 +11,9 @@ import json
 import time
 
 from app.utils.agent_auth import SCOPE_B, SCOPE_R, agent_required, current_user_id
-from app.utils.agent_jobs import cancel_job, get_job, list_jobs, stream_progress
+from app.utils.agent_jobs import (
+    cancel_job, decode_job_error, get_job, list_jobs, stream_progress,
+)
 from flask import Response, request
 
 from . import agent_v1_bp
@@ -32,7 +34,7 @@ def list_user_jobs():
 @agent_required(SCOPE_R)
 def get_user_job(job_id: str):
     """Fetch a single job (tenant-scoped)."""
-    row = get_job(job_id, user_id=current_user_id())
+    row = _public_job(get_job(job_id, user_id=current_user_id()))
     if not row:
         return error(404, "Job not found", http=404)
     return envelope(row)
@@ -41,12 +43,19 @@ def get_user_job(job_id: str):
 @agent_v1_bp.route("/jobs/<job_id>/cancel", methods=["POST"])
 @agent_required(SCOPE_B)
 def cancel_user_job(job_id: str):
-    row = cancel_job(job_id, user_id=current_user_id())
+    row = _public_job(cancel_job(job_id, user_id=current_user_id()))
     if not row:
         return error(404, "Job not found", http=404)
     if row.get("status") != "cancelled":
         return error(409, f"Job is already {row.get('status')}", http=409)
     return envelope(row, message="cancelled")
+
+
+def _public_job(row):
+    """Expose structured runner failures in ``error`` as ``{code, message, details}``."""
+    if not row:
+        return row
+    return {**row, "error": decode_job_error(row.get("error"))}
 
 
 def _sse_frame(event: str, data) -> bytes:
@@ -71,7 +80,7 @@ def stream_user_job(job_id: str):
     the final `result` frame is emitted immediately and the stream closes.
     """
     user_id = current_user_id()
-    row = get_job(job_id, user_id=user_id)
+    row = _public_job(get_job(job_id, user_id=user_id))
     if not row:
         return error(404, "Job not found", http=404)
 
@@ -107,7 +116,7 @@ def stream_user_job(job_id: str):
                     yield _sse_frame("progress", rec)
                     last_progress = signature
 
-            final = get_job(job_id, user_id=user_id) or row
+            final = _public_job(get_job(job_id, user_id=user_id)) or row
             if final.get("status") in ("succeeded", "failed", "cancelled"):
                 yield _sse_frame("result", {
                     "job_id": final.get("job_id", job_id),

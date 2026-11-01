@@ -78,7 +78,7 @@ def execute_agent_job(job_id: str) -> None:
         event = {"phase": "failed", "error": str(exc)[:500], "ts": time.time()}
         if isinstance(failure, dict):
             event["failure"] = failure
-        if agent_jobs._set_failure(job_id, str(exc)):
+        if agent_jobs._set_failure(job_id, agent_jobs.job_failure_text(exc)):
             agent_jobs._publish_progress(
                 job_id,
                 event,

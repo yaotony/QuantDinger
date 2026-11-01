@@ -78,6 +78,62 @@ def _new_job_id() -> str:
     return uuid.uuid4().hex
 
 
+_ERROR_TEXT_LIMIT = 6000
+
+
+def structured_job_error(exc: BaseException) -> Optional[dict]:
+    """Return ``{code, message, details}`` for exceptions carrying structured details.
+
+    Runners raise domain errors such as ``BacktestRangeLimitError`` whose
+    ``details`` dict is the actionable part for API clients. Both the thread
+    and the Celery execution paths persist this same shape in ``error``.
+    """
+    details = getattr(exc, "details", None)
+    if not isinstance(details, dict):
+        return None
+    code = str(exc) or exc.__class__.__name__
+    return {
+        "code": code,
+        "message": str(details.get("msg") or code),
+        "details": details,
+    }
+
+
+def job_failure_text(exc: BaseException, traceback_text: str = "") -> str:
+    """Serialize a runner failure for the ``qd_agent_jobs.error`` column."""
+    structured = structured_job_error(exc)
+    if structured is not None:
+        encoded = json.dumps(structured, default=str, ensure_ascii=False)
+        if len(encoded) <= _ERROR_TEXT_LIMIT:
+            return encoded
+    if traceback_text:
+        return f"{exc}\n{traceback_text}"
+    return str(exc)
+
+
+def decode_job_error(value: Any) -> Any:
+    """Return the structured error object when ``value`` holds one, else ``value``."""
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.startswith("{"):
+        return value
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return value
+    if isinstance(decoded, dict) and "code" in decoded and isinstance(decoded.get("details"), dict):
+        return decoded
+    return value
+
+
+def legacy_job_error(value: Any) -> tuple[Any, Optional[dict]]:
+    """Split a stored error into the legacy string form and its failure details."""
+    decoded = decode_job_error(value)
+    if isinstance(decoded, dict):
+        return decoded.get("code"), decoded.get("details")
+    return decoded, None
+
+
 def submit_job(
     *,
     user_id: int,
@@ -170,7 +226,7 @@ def submit_job(
             event = {"phase": "failed", "error": str(exc)[:500], "ts": time.time()}
             if isinstance(failure, dict):
                 event["failure"] = failure
-            if _set_failure(job_id, f"{exc}\n{tb[-2000:]}"):
+            if _set_failure(job_id, job_failure_text(exc, tb[-2000:])):
                 _publish_progress(
                     job_id,
                     event,
@@ -431,7 +487,7 @@ def _set_result(job_id: str, result: Any) -> bool:
 
 
 def _set_failure(job_id: str, error: str) -> bool:
-    return _finish_job(job_id, "failed", error=error[:6000])
+    return _finish_job(job_id, "failed", error=error[:_ERROR_TEXT_LIMIT])
 
 
 def _finish_job(job_id: str, status: str, *, result: Any = None,

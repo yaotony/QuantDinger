@@ -159,6 +159,7 @@ def _public_job(row, *, include_result: bool = True):
         }
     else:
         request_payload = None
+    error_text, failure = agent_jobs.legacy_job_error(row.get("error"))
     return {
         "jobId": row.get("job_id"),
         "status": row.get("status"),
@@ -166,7 +167,8 @@ def _public_job(row, *, include_result: bool = True):
         "result": result if include_result else None,
         "hasResult": bool(result),
         "request": request_payload,
-        "error": row.get("error"),
+        "error": error_text,
+        "failure": failure,
         "createdAt": row.get("created_at"),
         "startedAt": row.get("started_at"),
         "finishedAt": row.get("finished_at"),

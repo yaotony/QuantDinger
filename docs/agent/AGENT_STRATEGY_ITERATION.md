@@ -171,7 +171,7 @@ MCP: `wait_for_job(job_id)` polls until a terminal state; `stream_job_until_done
 Terminal states are `succeeded`, `failed`, and `cancelled`.
 
 - On `succeeded`, `result.runId` is the saved Backtest Center history record. Keep it with the source id and version for the iteration log.
-- On `failed`, the first line of `error` starts with the failure code (for example `strategyV2.backtestRangeLimit`). The live stream's `failed` progress event also carries a structured `failure` object for range-limit errors. See [error codes](#error-codes-and-handling).
+- On `failed`, `error` is either a string whose first line starts with the failure code, or, for structured failures such as a run-time `strategyV2.backtestRangeLimit` (for example with a dynamic universe), the object `{code, message, details}`. See [error codes](#error-codes-and-handling).
 - A client timeout does not mean the job failed. Check `GET /jobs/{job_id}` or `GET /jobs?kind=backtest` before submitting a duplicate. Cancel a job you no longer need with `POST /jobs/{job_id}/cancel` (B scope, new idempotency key).
 
 ## Step 6: Diagnose and iterate
@@ -242,6 +242,7 @@ Plan ranges before submitting: compute the maximum selected range from the manif
 | Response | Meaning | Handling |
 | --- | --- | --- |
 | 400 `strategyV2.*` compile message | source does not compile | fix the source; recompile with `/strategy-sources/compile` |
+| 400 `strategyV2.backtestRangeLimit` | fetch window (range + warmup) exceeds the market/timeframe limit; no job is created or billed | use `details.recommended_start` / `details.recommended_end`, or shorten the range using the [limit table](#backtest-range-limits). `details` also carries `max_days` and `warmup_days`. If `details.recommendation_available` is false (recommended dates are `null`), warmup alone exceeds the limit: reduce `set_warmup`/lookbacks or use a higher timeframe |
 | 400 `Unsupported backtest fields: ...` | request contains unknown fields (for example `sourceId`) | send only the documented fields |
 | 400 `startDate and endDate are required` / `Invalid date` | missing or malformed dates | use `YYYY-MM-DD` |
 | 400 `Idempotency-Key header is required ...` | missing key | add a unique `Idempotency-Key` |
@@ -253,11 +254,11 @@ Plan ranges before submitting: compute the maximum selected range from the manif
 | 402 `INSUFFICIENT_CREDITS` (or another billing code) | backtest credits are exhausted or billing policy rejects the run | report to the human; do not retry in a loop |
 | 503 `BILLING_OR_JOB_UNAVAILABLE` / `AGENT_JOB_DISPATCH_FAILED` | job infrastructure unavailable | retry later with the same idempotency key |
 
-### Failed jobs (`status: "failed"`, code at the start of `error`)
+### Failed jobs (`status: "failed"`, code at the start of `error` or in `error.code`)
 
 | Code | Meaning | Handling |
 | --- | --- | --- |
-| `strategyV2.backtestRangeLimit` | fetch window (range + warmup) exceeds the market/timeframe limit | shorten the range using the [limit table](#backtest-range-limits); the stream's `failure` object includes `max_days`, `fetch_days`, `warmup_days`, `recommended_start`, and `recommended_end`. If `recommendation_available` is false, warmup alone exceeds the limit: reduce `set_warmup`/lookbacks or use a higher timeframe |
+| `strategyV2.backtestRangeLimit` | fetch window (range + warmup) exceeds the market/timeframe limit at run time (normally rejected at submission) | shorten the range using the [limit table](#backtest-range-limits); `error.details` includes `max_days`, `fetch_days`, `warmup_days`, `recommended_start`, and `recommended_end`. If `recommendation_available` is false, warmup alone exceeds the limit: reduce `set_warmup`/lookbacks or use a higher timeframe |
 | `strategyV2.insufficientWarmupData:SYMBOL@freq=have/need` | provider returned fewer bars before `startDate` than `warmupBars` (static universe) | move `startDate` later, reduce `set_warmup`, or choose an instrument with longer history. Dynamic universes skip such symbols instead and list them in `symbolsSkipped` |
 | `strategyV2.invalidDateRange` | `endDate` is not after `startDate` | fix the dates |
 | `strategyV2.backtestRangeEmpty` | no bars fall inside the selected range | choose a range with trading data |

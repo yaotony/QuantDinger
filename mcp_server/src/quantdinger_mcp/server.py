@@ -810,6 +810,11 @@ def submit_backtest(
 
     Omit ``commission`` and ``slippage`` to use the backend defaults (the same
     cost assumptions as the Backtest Center); pass explicit rates to override.
+
+    A range that exceeds the market/timeframe limit (warmup included) is
+    rejected before a job is created: the gateway's 400 body, whose
+    ``details`` carry ``max_days``, ``warmup_days``, ``recommended_start``
+    and ``recommended_end``, is returned verbatim.
     """
     assert_code_size(code, label="Strategy code")
     payload: dict[str, Any] = {

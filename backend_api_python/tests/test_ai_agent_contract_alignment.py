@@ -157,6 +157,34 @@ def test_agent_openapi_scope_classes_match_route_decorators():
     assert not mismatches, f"route scope != documented x-scope-class: {mismatches}"
 
 
+def test_agent_openapi_documents_backtest_range_limit_contract():
+    from datetime import datetime
+
+    from app.services.backtest_limits import validate_backtest_range
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    details = validate_backtest_range(
+        market="Crypto",
+        symbol="BTC/USDT",
+        timeframe="15m",
+        start_date=datetime(2023, 1, 1),
+        end_date=datetime(2024, 12, 31, 23, 59, 59),
+    )
+    assert details is not None
+    assert set(schemas["BacktestRangeLimitDetails"]["properties"]) == set(details)
+
+    submit = spec["paths"]["/api/agent/v1/backtest/run"]["post"]["responses"]
+    rejected = json.dumps(submit["400"])
+    assert "#/components/schemas/BacktestRangeLimitDetails" in rejected
+
+    job_error = schemas["Job"]["properties"]["error"]
+    assert {"$ref": "#/components/schemas/JobFailure"} in job_error["oneOf"]
+    assert set(schemas["JobFailure"]["required"]) == {"code", "message", "details"}
+
+
 def test_mcp_metadata_matches_exported_tools_and_documented_routes():
     metadata_names = {tool.id.removeprefix("mcp.") for tool in MCP_AGENT_TOOLS}
     assert metadata_names == _mcp_tool_names()

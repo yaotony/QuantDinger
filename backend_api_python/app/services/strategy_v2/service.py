@@ -831,6 +831,39 @@ class StrategyV2BacktestService:
         validate_fundamentals(frames, required)
 
 
+def precheck_backtest_range(
+    manifest: StrategyManifest,
+    *,
+    start_date: datetime,
+    end_date: datetime,
+) -> None:
+    """Reject an oversized range or warmup at submission time.
+
+    Mirrors the job-time check in ``run`` for static universes (including
+    catalog-derived underlying markets) without fetching market data.
+    Dynamic universes need tenant universe membership, so they stay with the
+    job-time check, which remains authoritative.
+    """
+    if manifest.universe.kind != "static":
+        return
+    candidates = [_instrument_member(item) for item in manifest.universe.instruments]
+    if not candidates:
+        return
+    _attach_catalog_products(candidates)
+    end_of_day = end_date.replace(hour=23, minute=59, second=59)
+    for frequency in manifest.frequencies:
+        _enforce_backtest_range(
+            candidates=candidates,
+            timeframe=frequency,
+            start_date=start_date,
+            end_date=end_of_day,
+            warmup_bars=manifest.warmup_bars,
+            fetch_start=start_date - timedelta(
+                days=_warmup_calendar_days(frequency, manifest.warmup_bars, candidates)
+            ),
+        )
+
+
 def _enforce_backtest_range(
     *,
     candidates: list[dict[str, Any]],
