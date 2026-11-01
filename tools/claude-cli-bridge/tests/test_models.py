@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from conftest import WRONG_KEY
 from http_client import post_json, request
 
 from claude_cli_bridge.config import BridgeConfig, ConfigError
@@ -24,7 +25,7 @@ def test_model_list_is_openai_shaped(base_url):
 
 
 def test_model_list_requires_api_key(base_url):
-    status, body = get_json(f"{base_url}/v1/models", api_key="wrong-key-0123456789")
+    status, body = get_json(f"{base_url}/v1/models", api_key=WRONG_KEY)
     assert status == 401
 
 
@@ -57,7 +58,7 @@ def test_requested_model_reaches_cli(base_url, calls, requested, cli_model):
     )
     assert status == 200
     argv = calls()[0]["argv"]
-    assert argv[argv.index("--model") + 1] == cli_model
+    assert f"--model={cli_model}" in argv
     assert body["model"] == f"claude-{cli_model}-test"
 
 
@@ -79,7 +80,7 @@ def test_unknown_model_can_fall_back_to_default(make_server, calls):
     )
     assert status == 200
     argv = calls()[0]["argv"]
-    assert argv[argv.index("--model") + 1] == "haiku"
+    assert "--model=haiku" in argv
 
 
 def test_claude_ids_can_be_disabled():
@@ -95,3 +96,16 @@ def test_claude_ids_can_be_disabled():
 def test_invalid_model_config_is_rejected(overrides):
     with pytest.raises(ConfigError):
         BridgeConfig(api_key="k" * 20, **overrides).validate()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["claude-opus --tools default", "claude-", "claude-UPPER", "claude-x;rm -rf /", "claude-" + "a" * 80],
+)
+def test_malformed_claude_ids_are_rejected(base_url, calls, name):
+    status, body = post_json(
+        f"{base_url}/v1/chat/completions",
+        {"model": name, "messages": [{"role": "user", "content": "q"}]},
+    )
+    assert status == 404
+    assert calls() == []

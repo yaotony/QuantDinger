@@ -48,9 +48,9 @@ class BridgeConfig:
             raise ConfigError("models must list at least one model alias")
         if self.unknown_model not in {"error", "default"}:
             raise ConfigError("unknown_model must be 'error' or 'default'")
-        if self.default_model not in self.models and not (
-            self.allow_claude_model_ids and self.default_model.startswith("claude-")
-        ):
+        from .models import is_known
+
+        if not is_known(self.default_model, self):
             raise ConfigError("default_model must be one of models")
         return self
 

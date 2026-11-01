@@ -12,7 +12,9 @@ import pytest
 from claude_cli_bridge.config import BridgeConfig
 from claude_cli_bridge.server import BridgeServer
 
-API_KEY = "test-key-0123456789abcdef"
+# Deliberately low-entropy so secret scanners do not mistake it for a real key.
+API_KEY = "t" * 24
+WRONG_KEY = "w" * 24
 FAKE = Path(__file__).with_name("fake_claude.py")
 
 

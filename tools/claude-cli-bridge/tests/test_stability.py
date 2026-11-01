@@ -7,6 +7,7 @@ import threading
 import time
 
 import pytest
+from conftest import API_KEY
 from http_client import post_json, request
 from test_streaming import open_stream, read_events
 
@@ -181,7 +182,7 @@ def test_request_log_has_metadata_but_no_prompt_or_key(base_url, caplog, monkeyp
     text = caplog.text
     assert "SECRET-PROMPT" not in text
     assert "SECRET-COMPLETION" not in text
-    assert "test-key" not in text
+    assert API_KEY not in text
 
 
 @pytest.mark.parametrize(

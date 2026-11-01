@@ -29,7 +29,7 @@ def test_plain_json_reply_passes_through(base_url, calls, monkeypatch):
     assert status == 200
     assert json.loads(body["choices"][0]["message"]["content"]) == {"signal": "buy", "confidence": 0.7}
     [call] = calls()
-    system = call["argv"][call["argv"].index("--system-prompt") + 1]
+    system = call["system_prompt"]
     assert system.startswith("Be helpful.")
     assert JSON_INSTRUCTION in system
 
@@ -72,7 +72,7 @@ def test_text_mode_is_unchanged(base_url, calls, monkeypatch):
     )
     assert status == 200
     assert body["choices"][0]["message"]["content"] == "not json and that is fine"
-    system = calls()[0]["argv"][calls()[0]["argv"].index("--system-prompt") + 1]
+    system = calls()[0]["system_prompt"]
     assert JSON_INSTRUCTION not in system
 
 

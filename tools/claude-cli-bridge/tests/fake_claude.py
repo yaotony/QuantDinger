@@ -12,6 +12,9 @@ import time
 
 
 def arg_value(argv: list[str], flag: str, default: str = "") -> str:
+    for item in argv:
+        if item.startswith(flag + "="):
+            return item[len(flag) + 1 :]
     if flag in argv:
         index = argv.index(flag)
         if index + 1 < len(argv):
@@ -36,7 +39,19 @@ def main() -> int:
     record = os.environ.get("FAKE_CLAUDE_RECORD")
     if record:
         with open(record, "a", encoding="utf-8") as handle:
-            entry = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(), "pid": os.getpid()}
+            prompt_file = arg_value(argv, "--system-prompt-file")
+            system_prompt = None
+            if prompt_file:
+                with open(prompt_file, encoding="utf-8") as prompt_handle:
+                    system_prompt = prompt_handle.read()
+            entry = {
+                "argv": argv,
+                "stdin": stdin,
+                "cwd": os.getcwd(),
+                "pid": os.getpid(),
+                "system_prompt": system_prompt,
+                "system_prompt_file": prompt_file,
+            }
             handle.write(json.dumps(entry) + "\n")
 
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "echo")

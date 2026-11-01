@@ -7,6 +7,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,11 +30,35 @@ def isolated_workdir(config: BridgeConfig) -> str:
     return str(path)
 
 
+@contextmanager
+def system_prompt_file(config: BridgeConfig, system_prompt: str | None):
+    """Write the system prompt to a private temp file for ``--system-prompt-file``.
+
+    Request text never appears on the command line, so it cannot be parsed as a
+    CLI flag, cannot exceed the argv size limit, and is not visible in ``ps``.
+    """
+    directory = Path(isolated_workdir(config)) / "prompts"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=directory, prefix="system-", suffix=".txt", delete=False
+    )
+    try:
+        with handle:
+            os.chmod(handle.name, 0o600)
+            handle.write(system_prompt or config.default_system_prompt)
+        yield handle.name
+    finally:
+        try:
+            os.unlink(handle.name)
+        except FileNotFoundError:
+            pass
+
+
 def build_command(
     config: BridgeConfig,
     *,
     model: str,
-    system_prompt: str | None,
+    prompt_file: str,
     output_format: str = "json",
 ) -> list[str]:
     command = [
@@ -41,10 +66,9 @@ def build_command(
         "-p",
         "--output-format",
         output_format,
-        "--model",
-        model,
-        "--system-prompt",
-        system_prompt or config.default_system_prompt,
+        f"--model={model}",
+        "--system-prompt-file",
+        prompt_file,
         # A plain text model: no tools, MCP servers, hooks, settings, or slash commands.
         "--tools",
         "",
@@ -155,7 +179,12 @@ def run_once(
     model: str,
     system_prompt: str | None,
 ) -> CliResult:
-    command = build_command(config, model=model, system_prompt=system_prompt)
+    with system_prompt_file(config, system_prompt) as prompt_file:
+        return _run_once(config, prompt=prompt, model=model, prompt_file=prompt_file)
+
+
+def _run_once(config: BridgeConfig, *, prompt: str, model: str, prompt_file: str) -> CliResult:
+    command = build_command(config, model=model, prompt_file=prompt_file)
     try:
         proc = subprocess.Popen(
             command,
@@ -208,7 +237,9 @@ class CliStream:
     ) -> None:
         self.model = model
         self.result: CliResult | None = None
-        command = build_command(config, model=model, system_prompt=system_prompt, output_format="stream-json")
+        self._prompt_file = system_prompt_file(config, system_prompt)
+        prompt_path = self._prompt_file.__enter__()
+        command = build_command(config, model=model, prompt_file=prompt_path, output_format="stream-json")
         try:
             self._proc = subprocess.Popen(
                 command,
@@ -220,6 +251,7 @@ class CliStream:
                 start_new_session=True,
             )
         except FileNotFoundError as exc:
+            self._prompt_file.__exit__(None, None, None)
             raise cli_not_found(config.claude_path) from exc
         self.timed_out = False
         self._timeout = config.request_timeout_seconds
@@ -260,6 +292,7 @@ class CliStream:
                 final = event
         returncode = self._proc.wait()
         self._watchdog.cancel()
+        self._release_prompt_file()
         stderr = self._proc.stderr.read() if self._proc.stderr else ""
         if self.timed_out:
             raise cli_timeout(self._timeout)
@@ -279,6 +312,12 @@ class CliStream:
     def close(self) -> None:
         self._watchdog.cancel()
         terminate(self._proc)
+        self._release_prompt_file()
+
+    def _release_prompt_file(self) -> None:
+        if self._prompt_file is not None:
+            self._prompt_file.__exit__(None, None, None)
+            self._prompt_file = None
 
 
 def terminate(proc: subprocess.Popen, grace_seconds: float = 2.0) -> None:
