@@ -46,6 +46,13 @@ curl -X POST http://localhost:8888/api/agent/v1/strategies \
 
 完整的设计与迭代流程、回测区间上限和错误处理见 [Agent 策略设计与回测迭代流程](AGENT_STRATEGY_ITERATION_CN.md)。
 
+成功的回测会写入 Backtest Center 历史，任务结果中的 `result.runId` 即该记录。使用 `R` Scope 读取回测历史：
+
+- `GET /backtest/runs`：按时间倒序列出本租户的回测，可按 `sourceId`、`strategyId`、`symbol`、`market`、`timeframe`、`createdFrom`/`createdTo`（`YYYY-MM-DD` 或 ISO-8601）筛选，用 `limit`/`offset` 分页，`pagination.hasMore` 与 `nextOffset` 指示是否还有下一页。每笔附 `metrics`：`totalReturn`、`maxDrawdown`、`totalTrades`、`winRate`、`totalFees`。
+- `GET /backtest/runs/{run_id}`：读取单笔回测的完整结果（含 `manifest` 与 `result`）。
+
+旧记录未保存手续费合计时，列表中的 `totalFees` 为 `null`，单笔读取会改用 `result.totalCommission`。其他租户的 `runId` 返回 404。
+
 ## 4. 研究、指标与交易
 
 - `/research/*`：点时点股票池、因子元数据和租户自选列表。

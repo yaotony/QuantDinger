@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 58
+    assert len(fresh_module.MCP_TOOL_NAMES) == 60
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
@@ -352,6 +352,56 @@ def test_submit_backtest_forwards_explicit_cost_overrides(monkeypatch, fresh_mod
 
     assert captured["json"]["commission"] == 0.002
     assert captured["json"]["slippage"] == 0.0
+
+
+def test_backtest_history_tools_are_read_only_gateway_reads(monkeypatch, fresh_module):
+    from quantdinger_mcp.tool_contract import WRITE_TOOLS
+
+    calls = []
+    monkeypatch.setattr(
+        fresh_module,
+        "_get",
+        lambda path, params=None: calls.append((path, params)) or {"items": []},
+    )
+
+    fresh_module.list_backtest_runs()
+    fresh_module.list_backtest_runs(
+        source_id=12,
+        strategy_id=5,
+        symbol=" BTC/USDT ",
+        created_from="2026-10-01",
+        created_to="2026-10-31",
+        limit=500,
+        offset=-3,
+    )
+    fresh_module.get_backtest_run(41)
+
+    assert calls[0] == ("/api/agent/v1/backtest/runs", {"limit": 20, "offset": 0})
+    assert calls[1] == ("/api/agent/v1/backtest/runs", {
+        "limit": 100,
+        "offset": 0,
+        "sourceId": 12,
+        "strategyId": 5,
+        "symbol": "BTC/USDT",
+        "createdFrom": "2026-10-01",
+        "createdTo": "2026-10-31",
+    })
+    assert calls[2] == ("/api/agent/v1/backtest/runs/41", None)
+    assert "list_backtest_runs" not in WRITE_TOOLS
+    assert "get_backtest_run" not in WRITE_TOOLS
+
+
+def test_get_backtest_run_not_found_is_protocol_error(monkeypatch, fresh_module):
+    from mcp.types import CallToolResult
+
+    body = {"code": 404, "message": "Backtest run not found", "details": None, "retriable": False, "data": None}
+    with httpx.Client(base_url="http://fixture.test", transport=httpx.MockTransport(
+        lambda _: httpx.Response(404, json=body)
+    )) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        result = asyncio.run(fresh_module.mcp.call_tool("get_backtest_run", {"run_id": 999}))
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
 
 
 def test_compile_strategy_code_forwards_idempotency_key(monkeypatch, fresh_module):

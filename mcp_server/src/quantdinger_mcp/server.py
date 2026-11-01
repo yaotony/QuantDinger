@@ -64,6 +64,8 @@ MCP_TOOL_NAMES = (
     "list_strategy_source_versions",
     "restore_strategy_source_version",
     "submit_backtest",
+    "list_backtest_runs",
+    "get_backtest_run",
     "list_portfolio_positions",
     "list_paper_orders",
     "cancel_open_paper_orders",
@@ -265,7 +267,8 @@ mcp = FastMCP(
         "Use list_strategy_templates, compile_strategy_code, and "
         "save_strategy_source before create_strategy. Source versions can be "
         "listed and restored only with explicit confirmation. submit_backtest "
-        "accepts Strategy API V2 Python code. "
+        "accepts Strategy API V2 Python code. Compare iterations with "
+        "list_backtest_runs (summary metrics) and get_backtest_run (full result). "
         "Long jobs: use wait_for_job or stream_job_until_done (bounded). "
         "Never pass natural language to backtest `code`."
     ),
@@ -839,6 +842,53 @@ def submit_backtest(
         payload["slippage"] = slippage
     headers = _idempotency_headers(idempotency_key)
     return _post("/api/agent/v1/backtest/run", json=payload, headers=headers)
+
+
+@_tool
+def list_backtest_runs(
+    source_id: int | None = None,
+    strategy_id: int | None = None,
+    symbol: str = "",
+    market: str = "",
+    timeframe: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    limit: int = 20,
+    offset: int = 0,
+) -> Any:
+    """List persisted backtest runs (newest first) with summary metrics.
+
+    Each item has ``runId`` and ``metrics`` (totalReturn, maxDrawdown,
+    totalTrades, winRate, totalFees). Filter by source/strategy/symbol or by
+    creation time (``YYYY-MM-DD`` or ISO-8601). Page with ``offset`` while
+    ``pagination.hasMore`` is true. A finished backtest job's
+    ``result.runId`` identifies its run.
+    """
+    params: dict[str, Any] = {
+        "limit": max(1, min(100, int(limit))),
+        "offset": max(0, int(offset)),
+    }
+    if source_id is not None:
+        params["sourceId"] = int(source_id)
+    if strategy_id is not None:
+        params["strategyId"] = int(strategy_id)
+    for key, value in (
+        ("symbol", symbol),
+        ("market", market),
+        ("timeframe", timeframe),
+        ("createdFrom", created_from),
+        ("createdTo", created_to),
+    ):
+        text = str(value or "").strip()
+        if text:
+            params[key] = text
+    return _get("/api/agent/v1/backtest/runs", params=params)
+
+
+@_tool
+def get_backtest_run(run_id: int) -> Any:
+    """Read one backtest run's summary, manifest, and full stored result."""
+    return _get(f"/api/agent/v1/backtest/runs/{int(run_id)}")
 
 
 # Portfolio (read-only)

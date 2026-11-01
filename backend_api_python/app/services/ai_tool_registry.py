@@ -530,6 +530,34 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         safety="Backtest only; no orders are placed.",
     ),
     ToolDefinition(
+        id="mcp.list_backtest_runs",
+        category="backtest",
+        label_zh="列出回测历史",
+        label_en="List backtest runs",
+        description_zh="按策略源码、策略或时间筛选回测历史并分页，每笔附报酬、最大回撤、交易数、胜率和总手续费。",
+        description_en=(
+            "List persisted backtest runs filtered by source, strategy, or time, with paging and "
+            "return, max drawdown, trade count, win rate, and total fees per run."
+        ),
+        route="/api/agent/v1/backtest/runs",
+        produces=("backtest_run_list",),
+        risk_level="read",
+        priority=88,
+    ),
+    ToolDefinition(
+        id="mcp.get_backtest_run",
+        category="backtest",
+        label_zh="读取回测结果",
+        label_en="Get backtest run",
+        description_zh="用 runId 读取一笔回测的完整结果。",
+        description_en="Read one backtest run's full stored result by runId.",
+        route="/api/agent/v1/backtest/runs/{run_id}",
+        requires=("run_id",),
+        produces=("backtest_result",),
+        risk_level="read",
+        priority=87,
+    ),
+    ToolDefinition(
         id="mcp.list_jobs",
         category="jobs",
         label_zh="列出任务",
