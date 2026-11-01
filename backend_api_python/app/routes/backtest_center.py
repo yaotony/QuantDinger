@@ -7,7 +7,8 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from flask import Response, g, jsonify, request
+from flask import g, jsonify, request
+from flask import Response
 
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.routes.strategy_services import get_strategy_service
@@ -527,10 +528,10 @@ def get_strategy_backtest():
 )
 @login_required
 def download_strategy_backtest_report():
+    run_id = _positive_int(request.args.get("runId"))
+    if not run_id:
+        return jsonify({"code": 0, "msg": "strategyV2.runIdRequired", "data": None}), 400
     try:
-        run_id = _positive_int(request.args.get("runId"))
-        if not run_id:
-            raise ValueError("strategyV2.runIdRequired")
         row = get_strategy_backtest_repository().get_run(user_id=int(g.user_id), run_id=run_id)
         if not row:
             return jsonify({"code": 0, "msg": "strategyV2.runNotFound", "data": None}), 404
@@ -538,8 +539,6 @@ def download_strategy_backtest_report():
             detect_request_language(request, default=DEFAULT_REPORT_LANGUAGE)
         ) or DEFAULT_REPORT_LANGUAGE
         markdown = render_backtest_report(row, language=language)
-    except ValueError as exc:
-        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
     except Exception:
         logger.exception("Backtest report download failed")
         return jsonify({"code": 0, "msg": "strategyV2.backtest.reportFailed", "data": None}), 500

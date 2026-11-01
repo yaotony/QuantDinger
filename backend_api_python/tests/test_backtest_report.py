@@ -434,4 +434,19 @@ def test_web_download_requires_run_id(app, repository):
     response, status = _download(app, "runId=abc")
 
     assert status == 400
+    assert response.get_json()["msg"] == "strategyV2.runIdRequired"
     assert repository.get_calls == []
+
+
+def test_web_download_hides_internal_errors(app, monkeypatch):
+    class _Failing:
+        @staticmethod
+        def get_run(**_kwargs):
+            raise ValueError("connection string leaked")
+
+    monkeypatch.setattr(backtest_center, "get_strategy_backtest_repository", lambda: _Failing())
+
+    response, status = _download(app, "runId=41")
+
+    assert status == 500
+    assert response.get_json()["msg"] == "strategyV2.backtest.reportFailed"
