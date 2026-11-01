@@ -94,6 +94,8 @@ submit_backtest(
 )
 ```
 
+`commission` and `slippage` are optional rates (for example `0.0005` = 0.05%). When omitted, the MCP server does not send them and the backend applies its defaults (currently `0.0005` each), so MCP and Backtest Center runs share the same cost assumptions. Pass explicit values only to override them.
+
 Market, symbol, and timeframe are not backtest parameters. They come from the compiled strategy manifest. Use `wait_for_job` or `stream_job_until_done` to obtain the result.
 
 Indicators are chart-only. Validate and save them through the indicator tools, then convert the idea into Strategy API V2 code before using `submit_backtest` or `create_strategy`.
