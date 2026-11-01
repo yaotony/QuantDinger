@@ -1790,6 +1790,7 @@ CREATE TABLE IF NOT EXISTS qd_backtest_runs (
     result_status VARCHAR(32) DEFAULT 'unknown',
     data_kind VARCHAR(32) DEFAULT 'unknown',
     benchmark_total_return DOUBLE PRECISION,
+    total_commission DOUBLE PRECISION,
     summary_backfilled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT NOW()
 );
@@ -1805,6 +1806,9 @@ ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS data_kind VARCHAR(32) DEFA
 ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS benchmark_total_return DOUBLE PRECISION;
 ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS summary_backfilled BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS result_compacted BOOLEAN NOT NULL DEFAULT FALSE;
+-- Summary fee total for history listings. Runs recorded before this column
+-- existed keep NULL; their full result still carries totalCommission.
+ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS total_commission DOUBLE PRECISION;
 
 DO $$
 DECLARE

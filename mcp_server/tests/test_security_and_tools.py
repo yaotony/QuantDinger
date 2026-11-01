@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 60
+    assert len(fresh_module.MCP_TOOL_NAMES) == 66
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
@@ -406,6 +406,64 @@ def test_submit_backtest_uses_strategy_v2_payload(monkeypatch, fresh_module):
     assert captured["headers"] == {"Idempotency-Key": "same-key"}
 
 
+def _capture_backtest_post(monkeypatch, fresh_module) -> dict:
+    captured: dict = {}
+
+    def fake_post(path, json=None, headers=None):
+        captured["path"] = path
+        captured["json"] = json
+        return {"job_id": "job-test"}
+
+    monkeypatch.setattr(fresh_module, "_post", fake_post)
+    return captured
+
+
+def test_submit_backtest_by_source_id_sends_no_code(monkeypatch, fresh_module):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_backtest(
+        start_date="2024-01-01",
+        end_date="2024-06-30",
+        source_id=11,
+        source_version=2,
+        idempotency_key="source-run",
+    )
+
+    assert captured["path"] == "/api/agent/v1/backtest/run"
+    assert captured["json"]["sourceId"] == 11
+    assert captured["json"]["sourceVersion"] == 2
+    assert "code" not in captured["json"]
+
+
+def test_submit_backtest_by_source_id_defaults_to_latest(monkeypatch, fresh_module):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_backtest(
+        start_date="2024-01-01", end_date="2024-06-30", source_id=11, idempotency_key="latest",
+    )
+
+    assert captured["json"]["sourceId"] == 11
+    assert "sourceVersion" not in captured["json"]
+
+
+@pytest.mark.parametrize(("kwargs", "match"), [
+    ({"code": "def initialize(context):\n    pass\n", "source_id": 11}, "exactly one"),
+    ({}, "exactly one"),
+    ({"code": "def initialize(context):\n    pass\n", "source_version": 1}, "requires source_id"),
+    ({"source_id": 0}, "positive integer"),
+    ({"source_id": True}, "positive integer"),
+    ({"source_id": 11, "source_version": -1}, "positive integer"),
+])
+def test_submit_backtest_rejects_invalid_source_selection(monkeypatch, fresh_module, kwargs, match):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    with pytest.raises(ValueError, match=match):
+        fresh_module.submit_backtest(
+            start_date="2024-01-01", end_date="2024-06-30", idempotency_key="bad", **kwargs,
+        )
+    assert captured == {}
+
+
 def test_submit_backtest_returns_range_limit_details_verbatim(monkeypatch, fresh_module):
     details = {
         "error_type": "BACKTEST_RANGE_LIMIT",
@@ -519,6 +577,184 @@ def test_submit_backtest_forwards_funding_mode_only_when_set(monkeypatch, fresh_
     assert captured[1]["fundingMode"] == "historical_rates"
     with pytest.raises(ValueError, match="funding_mode"):
         fresh_module.submit_backtest(code, "2024-01-01", "2024-06-30", funding_mode="fixed")
+
+
+def test_backtest_history_tools_are_read_only_gateway_reads(monkeypatch, fresh_module):
+    from quantdinger_mcp.tool_contract import WRITE_TOOLS
+
+    calls = []
+    monkeypatch.setattr(
+        fresh_module,
+        "_get",
+        lambda path, params=None: calls.append((path, params)) or {"items": []},
+    )
+
+    fresh_module.list_backtest_runs()
+    fresh_module.list_backtest_runs(
+        source_id=12,
+        strategy_id=5,
+        symbol=" BTC/USDT ",
+        created_from="2026-10-01",
+        created_to="2026-10-31",
+        limit=500,
+        offset=-3,
+    )
+    fresh_module.get_backtest_run(41)
+
+    assert calls[0] == ("/api/agent/v1/backtest/runs", {"limit": 20, "offset": 0})
+    assert calls[1] == ("/api/agent/v1/backtest/runs", {
+        "limit": 100,
+        "offset": 0,
+        "sourceId": 12,
+        "strategyId": 5,
+        "symbol": "BTC/USDT",
+        "createdFrom": "2026-10-01",
+        "createdTo": "2026-10-31",
+    })
+    assert calls[2] == ("/api/agent/v1/backtest/runs/41", None)
+    assert "list_backtest_runs" not in WRITE_TOOLS
+    assert "get_backtest_run" not in WRITE_TOOLS
+
+
+def test_get_backtest_report_is_read_only_gateway_read(monkeypatch, fresh_module):
+    from quantdinger_mcp.tool_contract import WRITE_TOOLS
+
+    calls = []
+    monkeypatch.setattr(
+        fresh_module,
+        "_get",
+        lambda path, params=None: calls.append((path, params)) or {"markdown": "# report"},
+    )
+
+    fresh_module.get_backtest_report(41)
+    fresh_module.get_backtest_report(41, language=" zh-TW ")
+
+    assert calls == [
+        ("/api/agent/v1/backtest/runs/41/report", {"language": "en-US"}),
+        ("/api/agent/v1/backtest/runs/41/report", {"language": "zh-TW"}),
+    ]
+    assert "get_backtest_report" not in WRITE_TOOLS
+
+
+def _capture_optimization_post(monkeypatch, fresh_module) -> dict:
+    captured: dict = {}
+
+    def fake_post(path, json=None, headers=None):
+        captured.update(path=path, json=json, headers=headers)
+        return {"job_id": "job-opt", "mode": "sweep"}
+
+    monkeypatch.setattr(fresh_module, "_post", fake_post)
+    return captured
+
+
+def test_submit_parameter_sweep_payload(monkeypatch, fresh_module):
+    captured = _capture_optimization_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_parameter_sweep(
+        source_id=11,
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        idempotency_key="sweep-1",
+        parameter_space=[{"name": "fast", "min": 5, "max": 20, "step": 5}],
+        max_combinations=20,
+        out_of_sample_ratio=0.25,
+    )
+
+    assert captured["path"] == "/api/agent/v1/optimization/sweep"
+    assert captured["headers"] == {"Idempotency-Key": "sweep-1"}
+    assert captured["json"]["sourceId"] == 11
+    assert captured["json"]["parameterSpace"][0]["name"] == "fast"
+    assert captured["json"]["maxCombinations"] == 20
+    assert captured["json"]["outOfSampleRatio"] == 0.25
+    assert "commission" not in captured["json"]
+    assert "folds" not in captured["json"]
+
+
+def test_submit_walk_forward_payload(monkeypatch, fresh_module):
+    captured = _capture_optimization_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_walk_forward(
+        source_id=11,
+        source_version=2,
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        idempotency_key="wf-1",
+        folds=5,
+        holdout_ratio=0.2,
+        objective="totalReturn",
+    )
+
+    assert captured["path"] == "/api/agent/v1/optimization/walk-forward"
+    assert captured["json"]["sourceVersion"] == 2
+    assert captured["json"]["folds"] == 5
+    assert captured["json"]["holdoutRatio"] == 0.2
+    assert captured["json"]["objective"] == "totalReturn"
+    assert "outOfSampleRatio" not in captured["json"]
+
+
+@pytest.mark.parametrize(("tool", "kwargs", "match"), [
+    ("submit_parameter_sweep", {"idempotency_key": ""}, "idempotency_key is required"),
+    ("submit_walk_forward", {"idempotency_key": ""}, "idempotency_key is required"),
+    ("submit_parameter_sweep", {"idempotency_key": "x", "source_id": 0}, "positive integer"),
+    ("submit_walk_forward", {"idempotency_key": "x", "parameter_space": {"fast": 1}}, "list of objects"),
+    ("submit_parameter_sweep", {"idempotency_key": "x", "max_combinations": 0}, "positive integer"),
+])
+def test_optimization_tools_reject_unsafe_input_locally(monkeypatch, fresh_module, tool, kwargs, match):
+    captured = _capture_optimization_post(monkeypatch, fresh_module)
+    arguments = {"source_id": 11, "start_date": "2024-01-01", "end_date": "2024-12-31", **kwargs}
+
+    with pytest.raises(ValueError, match=match):
+        getattr(fresh_module, tool)(**arguments)
+    assert captured == {}
+
+
+def test_optimization_limit_errors_are_protocol_errors(monkeypatch, fresh_module):
+    from mcp.types import CallToolResult
+
+    body = {
+        "code": 429,
+        "message": "Optimization daily limit reached",
+        "details": {"error_type": "OPTIMIZATION_DAILY_LIMIT", "limit": 20, "used": 20},
+        "retriable": False,
+        "data": None,
+    }
+    with httpx.Client(base_url="http://fixture.test", transport=httpx.MockTransport(
+        lambda _: httpx.Response(429, json=body)
+    )) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        result = asyncio.run(fresh_module.mcp.call_tool("submit_parameter_sweep", {
+            "source_id": 11, "start_date": "2024-01-01", "end_date": "2024-12-31", "idempotency_key": "x",
+        }))
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
+    assert "OPTIMIZATION_DAILY_LIMIT" in result.content[0].text
+
+
+def test_optimization_parameter_space_is_read_only(monkeypatch, fresh_module):
+    from quantdinger_mcp.tool_contract import WRITE_TOOLS
+
+    calls = []
+    monkeypatch.setattr(fresh_module, "_get", lambda path, params=None: calls.append((path, params)) or {})
+
+    fresh_module.get_optimization_parameter_space(11, source_version=3)
+
+    assert calls == [("/api/agent/v1/optimization/parameter-space", {"sourceId": 11, "sourceVersion": 3})]
+    assert "get_optimization_parameter_space" not in WRITE_TOOLS
+    assert WRITE_TOOLS["submit_parameter_sweep"] is False
+    assert WRITE_TOOLS["submit_walk_forward"] is False
+
+
+def test_get_backtest_run_not_found_is_protocol_error(monkeypatch, fresh_module):
+    from mcp.types import CallToolResult
+
+    body = {"code": 404, "message": "Backtest run not found", "details": None, "retriable": False, "data": None}
+    with httpx.Client(base_url="http://fixture.test", transport=httpx.MockTransport(
+        lambda _: httpx.Response(404, json=body)
+    )) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        result = asyncio.run(fresh_module.mcp.call_tool("get_backtest_run", {"run_id": 999}))
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
 
 
 def test_compile_strategy_code_forwards_idempotency_key(monkeypatch, fresh_module):

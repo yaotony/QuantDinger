@@ -22,7 +22,8 @@ Related references:
 | 3. Save or update the source | `POST /strategy-sources`, `PATCH /strategy-sources/{id}` | `save_strategy_source` | W |
 | 4. Submit a backtest | `POST /backtest/run` | `submit_backtest` | B |
 | 5. Wait for the job | `GET /jobs/{job_id}` or `GET /jobs/{job_id}/stream` | `wait_for_job`, `stream_job_until_done` | R |
-| 6. Inspect history | `GET /jobs?kind=backtest`, `GET /strategy-sources/{id}/versions` | `list_jobs`, `list_strategy_source_versions` | R |
+| 6. Inspect history | `GET /backtest/runs`, `GET /backtest/runs/{run_id}`, `GET /backtest/runs/{run_id}/report`, `GET /strategy-sources/{id}/versions` | `list_backtest_runs`, `get_backtest_run`, `get_backtest_report`, `list_strategy_source_versions` | R |
+| 7. Optimize parameters | `GET /optimization/parameter-space`, `POST /optimization/sweep`, `POST /optimization/walk-forward` | `get_optimization_parameter_space`, `submit_parameter_sweep`, `submit_walk_forward` | R / B |
 
 All HTTP paths below are relative to `/api/agent/v1`. Every `POST`/`PATCH` that needs W, B, N, or T scope requires a unique `Idempotency-Key` header (at most 120 characters). Reuse a key only to retry the exact same request.
 
@@ -126,7 +127,12 @@ Saving is optional for a single experiment, but it keeps an audit trail of what 
 
 ## Step 4: Submit a backtest
 
-`/backtest/run` takes the source code itself (not a source id). Submit exactly the code that was saved.
+`/backtest/run` takes exactly one of:
+
+- `sourceId` (recommended once the source is saved): runs a saved source owned by your tenant. Add `sourceVersion` (the `version_no` from `GET /strategy-sources/{id}/versions`) to pin a snapshot; omit it to run the latest version. Another tenant's source returns 404.
+- `code`: inline source for unsaved experiments.
+
+Sending both, or neither, returns 400. With `sourceId`, the server resolves and pins the version when the job is accepted, so a later save does not change what the queued job runs.
 
 ```bash
 curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
@@ -134,7 +140,8 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: lab-bt-ema-v1-2024" \
   -d '{
-    "code": "<same source as the saved version>",
+    "sourceId": 12,
+    "sourceVersion": 1,
     "startDate": "2024-01-01",
     "endDate": "2024-12-31",
     "initialCapital": 10000,
@@ -145,17 +152,19 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
-Accepted fields are `code`, `startDate`, `endDate`, `initialCapital`, `commission`, `slippage`, `leverageEnabled`, `leverage`, `params`, `instrumentRulesSnapshotId`, and `fundingMode`; anything else is rejected with HTTP 400. A successful submission returns HTTP 202 with `data.job_id` and `status: "queued"`.
+Accepted fields are `code`, `sourceId`, `sourceVersion`, `startDate`, `endDate`, `initialCapital`, `commission`, `slippage`, `leverageEnabled`, `leverage`, `params`, `instrumentRulesSnapshotId`, and `fundingMode`; anything else is rejected with HTTP 400. A successful submission returns HTTP 202 with `data.job_id` and `status: "queued"`. When the request used `sourceId`, the receipt and the job result also carry `strategySource: {sourceId, versionId, versionNo}`, the exact version that ran.
 
 `fundingMode` defaults to `not_modeled`. For Binance USDⓈ-M perpetual (`@binance:swap`) strategies held across funding settlements, send `"fundingMode": "historical_rates"`: trades then carry `funding_fee` (positive = paid) with `profit` already net of it, the summary adds `totalFundingFee`, and `result.funding` lists `missingPeriods` and `warnings` (missing settlements count as zero). Other exchanges are reported as not modeled. Any other value returns HTTP 400 `strategyV2.fundingModeUnsupported:<value>`. Full rules: [Strategy guide: perpetual funding](../trading/STRATEGY_DEV_GUIDE.md#perpetual-funding).
 
 MCP equivalent:
 
 ```text
-submit_backtest(code=..., start_date="2024-01-01", end_date="2024-12-31",
+submit_backtest(source_id=12, source_version=1, start_date="2024-01-01", end_date="2024-12-31",
                 initial_capital=10000, params={...}, idempotency_key="lab-bt-ema-v1-2024")
 # Perpetual strategies: add funding_mode="historical_rates"
 ```
+
+Pass `code=...` instead of `source_id` for an unsaved experiment.
 
 Concurrency is capped per tenant (default 4) and per token (default 2). On HTTP 429, wait for running jobs to finish before submitting more.
 
@@ -179,7 +188,7 @@ MCP: `wait_for_job(job_id)` polls until a terminal state; `stream_job_until_done
 
 Terminal states are `succeeded`, `failed`, and `cancelled`.
 
-- On `succeeded`, `result.runId` is the saved Backtest Center history record. Keep it with the source id and version for the iteration log.
+- On `succeeded`, `result.runId` is the saved Backtest Center history record. For `sourceId` runs, `result.strategySource` records the source id and version that ran; keep both with `runId` in the iteration log.
 - On `failed`, `error` is either a string whose first line starts with the failure code, or, for structured failures such as a run-time `strategyV2.backtestRangeLimit` (for example with a dynamic universe), the object `{code, message, details}`. See [error codes](#error-codes-and-handling).
 - A client timeout does not mean the job failed. Check `GET /jobs/{job_id}` or `GET /jobs?kind=backtest` before submitting a duplicate. Cancel a job you no longer need with `POST /jobs/{job_id}/cancel` (B scope, new idempotency key).
 
@@ -204,6 +213,72 @@ Iteration rules:
 3. Re-run promising variants on a second, non-overlapping date range and with higher commission/slippage. An edge that disappears under small cost changes is not robust.
 4. Avoid tuning parameters to one period. Prefer fewer parameters and wider stable regions.
 5. Stop when the strategy meets the user's stated criteria, or report that it does not after a bounded number of iterations.
+
+### Compare iterations from backtest history
+
+`GET /backtest/runs` (MCP `list_backtest_runs`) lists the tenant's saved runs newest first. Filter by `sourceId`, `strategyId`, `symbol`, `market`, `timeframe`, or `createdFrom`/`createdTo` (`YYYY-MM-DD` or ISO-8601), and page with `limit` (max 100) and `offset` while `pagination.hasMore` is true. Each item has `params`, `codeHash`, the date range, and `metrics`:
+
+| Metric | Meaning |
+| --- | --- |
+| `totalReturn` | Total return, percent |
+| `maxDrawdown` | Maximum drawdown, percent (negative) |
+| `totalTrades` | Closed round trips |
+| `winRate` | Winning closed trades, percent |
+| `totalFees` | Commission paid, account currency (`null` for runs saved before fee totals were stored) |
+
+Compare runs of one `sourceId` side by side; equal `codeHash` values mean identical code, so the difference comes from `params` or the range. Open a candidate with `GET /backtest/runs/{run_id}` (MCP `get_backtest_run`) to read the full `result` and `manifest`. Both endpoints only need R scope and never return another tenant's runs.
+
+### Report a run to the user
+
+`GET /backtest/runs/{run_id}/report?language=en-US` (MCP `get_backtest_report`) returns `data.markdown`, a Markdown report built from the stored result. It is the same document a logged-in user downloads from the Backtest Center (`GET /api/backtest/report?runId=...`), so the agent and the web page present the same figures. `language` is `en-US` (default), `zh-CN`, or `zh-TW`. The report has these sections:
+
+| Section | Contents |
+| --- | --- |
+| Summary | Period, market, symbol, timeframe, initial capital, final equity, total and annualized return, buy-and-hold return and excess return, max drawdown, Sharpe, Sortino, Calmar |
+| Cost breakdown | Commission, slippage, funding (shown as not modeled until funding is simulated), total trading cost, gross profit and loss before costs, cost as a share of each |
+| Trade diagnostics | Closed trades, win rate, profit factor, average R, expectancy per trade before and after costs, holding-time distribution, MAE/MFE |
+| Execution assumptions | Commission and slippage rates, leverage, fill, intrabar, bar-close and stop/take-profit rules, funding, data kind, and the simplified model's limitations |
+| Warnings | Non-market data, missing or partial benchmark coverage, skipped symbols, no executions, liquidation, sampled trade history, runs without diagnostics, unmodeled funding on perpetuals |
+| Strategy version | Strategy name, `sourceId`, source version when the run recorded it, strategy id, code hash, engine version, parameters |
+
+A field the run did not record reads "No data" instead of failing the report, so runs saved before trade diagnostics still render. Quote the report rather than restating figures from memory.
+
+## Step 7: Optimize parameters without overfitting
+
+Hand-tuning one backtest at a time quietly fits the parameters to the whole range. Use an optimization job instead. Both modes run on a saved source (`sourceId`, optional `sourceVersion`; the version is pinned at submit time) and apply the same compile, market/instrument allowlist, and range checks as `POST /backtest/run`.
+
+1. Read the declared space with `GET /optimization/parameter-space?sourceId=12` (MCP `get_optimization_parameter_space`). Only optimizable parameters declared by the source can be swept, and each `parameterSpace` entry (`{"name", "min", "max", "step"}`) must stay inside the declared range. Omit `parameterSpace` to use every optimizable parameter over its declared range. The response also reports `limits`.
+2. Submit one of the two modes (B scope, `Idempotency-Key` required):
+
+| Mode | Endpoint / MCP tool | Selection (in sample) | Validation (out of sample) |
+| --- | --- | --- | --- |
+| Sweep | `POST /optimization/sweep` / `submit_parameter_sweep` | Every combination runs on the first part of the range; ranked by `objective` (`sharpeRatio` or `totalReturn`) | Only the best combination runs once on the last `outOfSampleRatio` (default 0.3) of the bars |
+| Walk-forward | `POST /optimization/walk-forward` / `submit_walk_forward` | Anchored folds (`folds`, `trainRatio`): each fold picks the best training combination; final `bestParams` are picked on the development window | Each fold winner is scored on the next window; `bestParams` run once on the trailing holdout (`holdoutRatio`, default 0.2) |
+
+```bash
+curl -s -X POST http://localhost:8888/api/agent/v1/optimization/walk-forward \
+  -H "Authorization: Bearer $QD_AGENT_TOKEN" \
+  -H "Idempotency-Key: wf-example" -H "Content-Type: application/json" \
+  -d '{"sourceId": 12, "startDate": "2023-01-01", "endDate": "2024-12-31",
+       "parameterSpace": [{"name": "fast", "min": 5, "max": 20, "step": 5}],
+       "folds": 4, "objective": "sharpeRatio"}'
+```
+
+3. Poll `GET /jobs/{job_id}` (kind `parameter_optimization`). The `result` keeps the two sides apart:
+   - `inSample` (`usedForSelection: true`): the best combination's metrics, `topCandidates`, and for walk-forward each fold's training winner.
+   - `outOfSample` (`usedForSelection: false`): metrics that never influenced the choice; walk-forward adds per-fold validation metrics and a stitched `summary`.
+   - `bestParamsOutOfSample`: how `bestParams` did out of sample, with `passed` (active and profitable) and `degradation` (out-of-sample minus in-sample return and Sharpe). Treat a large negative degradation or `passed: false` as overfitting.
+   - `history.inSampleRunId` / `history.outOfSampleRunId`: the best parameters' runs saved to backtest history; read them with `GET /backtest/runs/{run_id}` or find them with `GET /backtest/runs?sourceId=12`.
+
+### Optimization limits
+
+| Limit | Default (environment variable) | Response when exceeded |
+| --- | --- | --- |
+| Combinations per job | 200 (`AGENT_OPTIMIZATION_MAX_COMBINATIONS`) | 400, `details.error_type` `OPTIMIZATION_COMBINATION_LIMIT` with `limit`, `requested`, `searchSpaceSize`. Narrow ranges, raise `step`, or set `maxCombinations` to sample an even subset. |
+| Concurrent optimization jobs per tenant | 1 (`AGENT_OPTIMIZATION_MAX_CONCURRENT_PER_TENANT`) | 429, `OPTIMIZATION_CONCURRENCY_LIMIT`, `retriable: true`. Wait for the running job. |
+| Optimization jobs per tenant per UTC day | 20 (`AGENT_OPTIMIZATION_MAX_DAILY_PER_TENANT`) | 429, `OPTIMIZATION_DAILY_LIMIT`, `retriable: false`, with `used` and `resetAt`. |
+
+The general per-tenant and per-token concurrent job caps of `/backtest/run` also apply. A study that finds no candidate with trades fails with `parameterOptimization.noActiveCandidates`; a range too short to split fails with `parameterOptimization.rangeTooShort`.
 
 ## Backtest range limits
 
@@ -276,7 +351,11 @@ The response contains:
 | --- | --- | --- |
 | 400 `strategyV2.*` compile message | source does not compile | fix the source; recompile with `/strategy-sources/compile` |
 | 400 `strategyV2.backtestRangeLimit` | fetch window (range + warmup) exceeds the market/timeframe limit; no job is created or billed | use `details.recommended_start` / `details.recommended_end`, or shorten the range using the [limit table](#backtest-range-limits). `details` also carries `max_days` and `warmup_days`. If `details.recommendation_available` is false (recommended dates are `null`), warmup alone exceeds the limit: reduce `set_warmup`/lookbacks or use a higher timeframe |
-| 400 `Unsupported backtest fields: ...` | request contains unknown fields (for example `sourceId`) | send only the documented fields |
+| 400 `Unsupported backtest fields: ...` | request contains unknown fields (for example `strategyId`) | send only the documented fields |
+| 400 `Provide either code or sourceId, not both` / `code or sourceId is required` / `sourceVersion requires sourceId` | invalid source selection | send exactly one of `code` or `sourceId` |
+| 404 `Strategy source not found` / `Strategy source version not found` | the source is missing or belongs to another tenant, or the version number does not exist | list sources and versions with `GET /strategy-sources` and `GET /strategy-sources/{id}/versions` |
+| 403 `Strategy source code is hidden` | purchased marketplace source whose code is hidden | backtest it from the Backtest Center UI |
+| 409 `Strategy source has no saved version` | legacy source without a version snapshot | save the source once (`PATCH /strategy-sources/{id}`) to create a version |
 | 400 `startDate and endDate are required` / `Invalid date` | missing or malformed dates | use `YYYY-MM-DD` |
 | 400 `Idempotency-Key header is required ...` | missing key | add a unique `Idempotency-Key` |
 | 409 `Idempotency-Key was already used with a different request` | key reused for a different body | generate a new key per distinct request |

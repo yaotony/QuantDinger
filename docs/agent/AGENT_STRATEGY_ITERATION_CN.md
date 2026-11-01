@@ -22,7 +22,8 @@
 | 3. 儲存或更新源碼 | `POST /strategy-sources`、`PATCH /strategy-sources/{id}` | `save_strategy_source` | W |
 | 4. 送出回測 | `POST /backtest/run` | `submit_backtest` | B |
 | 5. 等待 job 結果 | `GET /jobs/{job_id}` 或 `GET /jobs/{job_id}/stream` | `wait_for_job`、`stream_job_until_done` | R |
-| 6. 查詢歷史 | `GET /jobs?kind=backtest`、`GET /strategy-sources/{id}/versions` | `list_jobs`、`list_strategy_source_versions` | R |
+| 6. 查詢歷史 | `GET /backtest/runs`、`GET /backtest/runs/{run_id}`、`GET /backtest/runs/{run_id}/report`、`GET /strategy-sources/{id}/versions` | `list_backtest_runs`、`get_backtest_run`、`get_backtest_report`、`list_strategy_source_versions` | R |
+| 7. 參數優化 | `GET /optimization/parameter-space`、`POST /optimization/sweep`、`POST /optimization/walk-forward` | `get_optimization_parameter_space`、`submit_parameter_sweep`、`submit_walk_forward` | R／B |
 
 以下 HTTP 路徑都相對於 `/api/agent/v1`。所有需要 W、B、N、T 權限的 `POST`／`PATCH` 都必須帶唯一的 `Idempotency-Key` 標頭（最多 120 個字元）；只有在重試「完全相同」的請求時才可重用同一個 key。
 
@@ -126,7 +127,12 @@ curl -X POST http://localhost:8888/api/agent/v1/strategy-sources \
 
 ## 步驟 4：送出回測
 
-`/backtest/run` 接收的是源碼本身（不是 source id）。請送出與已儲存版本完全相同的程式碼。
+`/backtest/run` 必須擇一提供：
+
+- `sourceId`（源碼存檔後建議使用）：執行自己租戶已儲存的源碼。加上 `sourceVersion`（`GET /strategy-sources/{id}/versions` 回傳的 `version_no`）可指定版本快照；不帶就用最新版。指定其他租戶的源碼會回 404。
+- `code`：未存檔實驗用的內嵌源碼。
+
+兩者都帶或都不帶會回 400。使用 `sourceId` 時，伺服器在受理 job 當下就解析並鎖定版本，之後再存檔也不會改變排隊中 job 實際執行的程式碼。
 
 ```bash
 curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
@@ -134,7 +140,8 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: lab-bt-ema-v1-2024" \
   -d '{
-    "code": "<與已儲存版本相同的源碼>",
+    "sourceId": 12,
+    "sourceVersion": 1,
     "startDate": "2024-01-01",
     "endDate": "2024-12-31",
     "initialCapital": 10000,
@@ -145,17 +152,19 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
-可用欄位只有 `code`、`startDate`、`endDate`、`initialCapital`、`commission`、`slippage`、`leverageEnabled`、`leverage`、`params`、`instrumentRulesSnapshotId`、`fundingMode`；其他欄位會回 HTTP 400。送出成功回 HTTP 202，內含 `data.job_id` 與 `status: "queued"`。
+可用欄位只有 `code`、`sourceId`、`sourceVersion`、`startDate`、`endDate`、`initialCapital`、`commission`、`slippage`、`leverageEnabled`、`leverage`、`params`、`instrumentRulesSnapshotId`、`fundingMode`；其他欄位會回 HTTP 400。送出成功回 HTTP 202，內含 `data.job_id` 與 `status: "queued"`。使用 `sourceId` 時，回執與 job 結果還會帶 `strategySource: {sourceId, versionId, versionNo}`，也就是實際執行的版本。
 
 `fundingMode` 預設為 `not_modeled`。Binance USDⓈ-M 永續合約（`@binance:swap`）策略若持倉會跨過資金費結算，送 `"fundingMode": "historical_rates"`：每筆交易會帶 `funding_fee`（正值表示支付），`profit` 已扣除資金費；摘要多出 `totalFundingFee`；`result.funding` 列出 `missingPeriods` 與 `warnings`（缺少的結算點以 0 計算）。其他交易所標示為不計入。其他值回 HTTP 400 `strategyV2.fundingModeUnsupported:<value>`。完整規則見 [策略開發指南：永續合約資金費](../trading/STRATEGY_DEV_GUIDE_CN.md)。
 
 MCP 對應寫法：
 
 ```text
-submit_backtest(code=..., start_date="2024-01-01", end_date="2024-12-31",
+submit_backtest(source_id=12, source_version=1, start_date="2024-01-01", end_date="2024-12-31",
                 initial_capital=10000, params={...}, idempotency_key="lab-bt-ema-v1-2024")
 # 永續合約策略：加上 funding_mode="historical_rates"
 ```
+
+未存檔的實驗改傳 `code=...`，不要同時傳 `source_id`。
 
 同時執行的 job 有上限：每個租戶預設 4 個、每個 Token 預設 2 個。收到 HTTP 429 時，先等執行中的 job 結束再送。
 
@@ -179,7 +188,7 @@ MCP：`wait_for_job(job_id)` 會輪詢到結束狀態；`stream_job_until_done(j
 
 結束狀態有 `succeeded`、`failed`、`cancelled`：
 
-- `succeeded`：`result.runId` 是存進回測中心的歷史紀錄編號。請和 source id、版本一起記到迭代紀錄。
+- `succeeded`：`result.runId` 是存進回測中心的歷史紀錄編號。用 `sourceId` 送出的回測，`result.strategySource` 會記錄實際執行的 source id 與版本；請和 `runId` 一起記到迭代紀錄。
 - `failed`：`error` 可能是字串，第一行開頭就是錯誤代碼；若是結構化的失敗（例如執行時才發生的 `strategyV2.backtestRangeLimit`，常見於動態 universe），`error` 則是 `{code, message, details}` 物件。處理方式見[錯誤代碼](#錯誤代碼與處理方式)。
 - 用戶端逾時不代表 job 失敗。重送之前先查 `GET /jobs/{job_id}` 或 `GET /jobs?kind=backtest`。不再需要的 job 可用 `POST /jobs/{job_id}/cancel` 取消（B 權限、新的 idempotency key）。
 
@@ -204,6 +213,72 @@ MCP：`wait_for_job(job_id)` 會輪詢到結束狀態；`stream_job_until_done(j
 3. 有希望的版本要在第二段不重疊的區間、以及更高的手續費／滑價下重跑。成本稍微提高就消失的優勢並不穩健。
 4. 避免針對單一時期調參。偏好較少參數、較寬的穩定區域。
 5. 達到使用者設定的標準就停止；或在有限輪數後如實回報沒有達標。
+
+### 用回測歷史比較各輪結果
+
+`GET /backtest/runs`（MCP `list_backtest_runs`）依時間由新到舊列出本租戶存下的回測。可用 `sourceId`、`strategyId`、`symbol`、`market`、`timeframe`、`createdFrom`／`createdTo`（`YYYY-MM-DD` 或 ISO-8601）篩選；以 `limit`（上限 100）與 `offset` 分頁，`pagination.hasMore` 為 true 時還有下一頁。每筆都有 `params`、`codeHash`、日期區間與 `metrics`：
+
+| 指標 | 意義 |
+| --- | --- |
+| `totalReturn` | 總報酬（百分比） |
+| `maxDrawdown` | 最大回撤（百分比，負值） |
+| `totalTrades` | 完整來回交易數 |
+| `winRate` | 獲利交易比例（百分比） |
+| `totalFees` | 總手續費（帳戶幣別；手續費合計欄位上線前存的紀錄為 `null`） |
+
+把同一個 `sourceId` 的各輪放在一起比較；`codeHash` 相同代表程式碼相同，差異來自 `params` 或區間。要看細節時用 `GET /backtest/runs/{run_id}`（MCP `get_backtest_run`）讀取完整的 `result` 與 `manifest`。兩個端點都只需要 R 權限，也不會回傳其他租戶的紀錄。
+
+### 向使用者報告回測結果
+
+`GET /backtest/runs/{run_id}/report?language=zh-TW`（MCP `get_backtest_report`）回傳 `data.markdown`，是由儲存的回測結果產生的 Markdown 報告。登入的使用者在 Backtest Center 下載的（`GET /api/backtest/report?runId=...`）是同一份內容，所以 Agent 與網頁呈現的數字一致。`language` 可用 `en-US`（預設）、`zh-CN`、`zh-TW`。報告包含以下區塊：
+
+| 區塊 | 內容 |
+| --- | --- |
+| 摘要 | 區間、市場、標的、週期、本金、期末權益、總報酬與年化報酬、買進持有報酬與超額報酬、最大回撤、Sharpe、Sortino、Calmar |
+| 成本拆解 | 手續費、滑點、資金費（尚未模擬前顯示為未計入）、交易成本合計、扣成本前毛利與毛損，以及成本占兩者的比例 |
+| 交易診斷 | 已平倉交易數、勝率、獲利因子、平均 R、扣成本前後的每筆期望值、持倉時間分布、MAE／MFE |
+| 執行假設 | 手續費率與滑點率、槓桿、成交／K 棒內／收盤／停損停利規則、資金費、資料類型，以及簡化模型的限制 |
+| 警告 | 非市場資料、基準缺漏或只部分涵蓋、被略過的標的、沒有成交、強制平倉、交易歷史已抽樣、沒有診斷欄位的舊回測、永續合約未模擬資金費 |
+| 策略版本 | 策略名稱、`sourceId`、回測有記錄時的原始碼版本、策略 ID、程式碼雜湊、引擎版本、參數 |
+
+回測沒有記錄的欄位會顯示「無資料」，不會讓報告失敗，因此交易診斷上線前的舊回測也能產生報告。轉述給使用者時請引用報告內容，不要憑記憶重述數字。
+
+## 步驟 7：參數優化但不過度擬合
+
+一輪一輪手動調參，等於悄悄把參數貼合到整段區間。請改用優化 job。兩種模式都針對已儲存的源碼（`sourceId`，可選 `sourceVersion`；送出時就鎖定版本），並套用與 `POST /backtest/run` 相同的編譯、市場／標的白名單與區間檢查。
+
+1. 先用 `GET /optimization/parameter-space?sourceId=12`（MCP `get_optimization_parameter_space`）讀取宣告的參數空間。只能掃描源碼宣告為可優化的參數，每個 `parameterSpace` 項目（`{"name", "min", "max", "step"}`）都必須落在宣告範圍內。省略 `parameterSpace` 時，會使用所有可優化參數的完整宣告範圍。回應也會附上 `limits`。
+2. 送出其中一種模式（B 權限，必須帶 `Idempotency-Key`）：
+
+| 模式 | 端點／MCP 工具 | 選參（樣本內） | 驗證（樣本外） |
+| --- | --- | --- | --- |
+| 參數掃描 | `POST /optimization/sweep`／`submit_parameter_sweep` | 每個組合只在區間前段回測，依 `objective`（`sharpeRatio` 或 `totalReturn`）排序 | 只有最佳組合在最後 `outOfSampleRatio`（預設 0.3）的 K 棒上跑一次 |
+| Walk-forward | `POST /optimization/walk-forward`／`submit_walk_forward` | 錨定式分折（`folds`、`trainRatio`）：每折挑訓練期最佳組合；最終 `bestParams` 在開發區間挑選 | 每折的最佳組合在下一段區間評分；`bestParams` 在尾端保留區間（`holdoutRatio`，預設 0.2）只跑一次 |
+
+```bash
+curl -s -X POST http://localhost:8888/api/agent/v1/optimization/walk-forward \
+  -H "Authorization: Bearer $QD_AGENT_TOKEN" \
+  -H "Idempotency-Key: wf-example" -H "Content-Type: application/json" \
+  -d '{"sourceId": 12, "startDate": "2023-01-01", "endDate": "2024-12-31",
+       "parameterSpace": [{"name": "fast", "min": 5, "max": 20, "step": 5}],
+       "folds": 4, "objective": "sharpeRatio"}'
+```
+
+3. 輪詢 `GET /jobs/{job_id}`（kind 為 `parameter_optimization`）。`result` 會把兩邊分開列出：
+   - `inSample`（`usedForSelection: true`）：最佳組合的指標、`topCandidates`，walk-forward 另有每折的訓練期最佳組合。
+   - `outOfSample`（`usedForSelection: false`）：從未影響選參的指標；walk-forward 另有每折驗證指標與串接後的 `summary`。
+   - `bestParamsOutOfSample`：`bestParams` 在樣本外的表現，含 `passed`（有交易且獲利）與 `degradation`（樣本外減樣本內的報酬與 Sharpe）。衰退幅度很大或 `passed: false` 時，應視為過度擬合。
+   - `history.inSampleRunId`／`history.outOfSampleRunId`：最佳參數存入回測歷史的兩筆紀錄；可用 `GET /backtest/runs/{run_id}` 讀取，或用 `GET /backtest/runs?sourceId=12` 找到。
+
+### 優化上限
+
+| 上限 | 預設值（環境變數） | 超過時的回應 |
+| --- | --- | --- |
+| 每個 job 的組合數 | 200（`AGENT_OPTIMIZATION_MAX_COMBINATIONS`） | 400，`details.error_type` 為 `OPTIMIZATION_COMBINATION_LIMIT`，附 `limit`、`requested`、`searchSpaceSize`。請縮小範圍、加大 `step`，或設定 `maxCombinations` 平均抽樣。 |
+| 每租戶同時執行的優化 job | 1（`AGENT_OPTIMIZATION_MAX_CONCURRENT_PER_TENANT`） | 429，`OPTIMIZATION_CONCURRENCY_LIMIT`，`retriable: true`。等目前的 job 結束。 |
+| 每租戶每日（UTC）優化 job 數 | 20（`AGENT_OPTIMIZATION_MAX_DAILY_PER_TENANT`） | 429，`OPTIMIZATION_DAILY_LIMIT`，`retriable: false`，附 `used` 與 `resetAt`。 |
+
+`/backtest/run` 的每租戶、每 Token 同時 job 上限也同樣適用。找不到任何有交易的組合時，job 會以 `parameterOptimization.noActiveCandidates` 失敗；區間太短無法切分時則以 `parameterOptimization.rangeTooShort` 失敗。
 
 ## 回測區間上限
 
@@ -276,7 +351,11 @@ get_data_coverage(market="Crypto", symbol="BTC/USDT", timeframe="15m",
 | --- | --- | --- |
 | 400 `strategyV2.*` 編譯訊息 | 源碼無法編譯 | 修正源碼，用 `/strategy-sources/compile` 重新編譯 |
 | 400 `strategyV2.backtestRangeLimit` | 抓取區間（區間＋warmup）超過該市場／週期上限；不會建立 job，也不計費 | 改用 `details.recommended_start`／`details.recommended_end`，或依[上限表](#回測區間上限)縮短區間。`details` 也含 `max_days` 與 `warmup_days`。若 `details.recommendation_available` 為 false（建議日期為 `null`），代表光 warmup 就超限：降低 `set_warmup`／回看長度，或改用較高週期 |
-| 400 `Unsupported backtest fields: ...` | 請求含不支援的欄位（例如 `sourceId`） | 只送文件列出的欄位 |
+| 400 `Unsupported backtest fields: ...` | 請求含不支援的欄位（例如 `strategyId`） | 只送文件列出的欄位 |
+| 400 `Provide either code or sourceId, not both` / `code or sourceId is required` / `sourceVersion requires sourceId` | 源碼指定方式不正確 | `code` 與 `sourceId` 擇一送出 |
+| 404 `Strategy source not found` / `Strategy source version not found` | 源碼不存在或屬於其他租戶，或版本號不存在 | 用 `GET /strategy-sources` 與 `GET /strategy-sources/{id}/versions` 查詢 |
+| 403 `Strategy source code is hidden` | 市集購買、程式碼隱藏的源碼 | 改從回測中心介面回測 |
+| 409 `Strategy source has no saved version` | 舊源碼沒有版本快照 | 先存檔一次（`PATCH /strategy-sources/{id}`）建立版本 |
 | 400 `startDate and endDate are required`／`Invalid date` | 日期缺少或格式錯誤 | 使用 `YYYY-MM-DD` |
 | 400 `Idempotency-Key header is required ...` | 沒帶 key | 加上唯一的 `Idempotency-Key` |
 | 409 `Idempotency-Key was already used with a different request` | 同一個 key 用在不同內容 | 每個不同請求產生新的 key |

@@ -72,6 +72,8 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
+To backtest a saved source instead of resending code, send `"sourceId": 12` (optionally `"sourceVersion": 3`; the latest version when omitted) in place of `code`. Exactly one of `code` or `sourceId` is required, only your tenant's sources are accepted, and the receipt and job result report the version that ran as `strategySource`.
+
 Poll `/api/agent/v1/jobs/{job_id}` or consume `/api/agent/v1/jobs/{job_id}/stream`. Reuse an idempotency key when retrying the same submission.
 
 The submission checks the date range plus indicator warmup against the market and timeframe limit (for example 365 days for crypto `15m`) before it creates or bills a job. An oversized request returns HTTP 400 with `message: "strategyV2.backtestRangeLimit"` and `details` containing `max_days`, `warmup_days`, `recommended_start`, and `recommended_end`. When the warmup alone exceeds the limit, `recommendation_available` is `false` and the recommended dates are `null`; reduce the warmup or use a higher timeframe. If a job still fails for the same reason at run time (for example a dynamic universe), its `error` is the object `{code, message, details}` with the same `details`.
@@ -86,6 +88,29 @@ the initial submission still returns `job_id` while the run is queued. The resul
 keeps its existing metrics alongside `runId`. A persistence error fails the job
 instead of reporting a successful result without saved history. Jobs completed
 before this behavior was enabled are not automatically added to history.
+
+Read that history with R scope:
+
+```bash
+# Newest first; filter by sourceId, strategyId, symbol, market, timeframe,
+# createdFrom/createdTo (YYYY-MM-DD or ISO-8601); page with limit/offset.
+curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  "http://localhost:8888/api/agent/v1/backtest/runs?sourceId=12&limit=20"
+
+# Full stored result for one run
+curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  http://localhost:8888/api/agent/v1/backtest/runs/41
+
+# Markdown report (data.markdown); language: en-US, zh-CN or zh-TW
+curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  "http://localhost:8888/api/agent/v1/backtest/runs/41/report?language=en-US"
+```
+
+The report is the same document the Backtest Center download returns for that run; see [Report a run to the user](AGENT_STRATEGY_ITERATION.md#report-a-run-to-the-user) for its sections.
+
+Each list item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`, so iterations can be compared without loading full results. `pagination.hasMore` and `nextOffset` drive paging. Runs saved before fee totals were stored report `totalFees: null` in the list; the single-run read falls back to `result.totalCommission`. Another tenant's `runId` returns 404.
+
+To optimize a saved source's parameters, use an optimization job instead of looping single backtests. `GET /optimization/parameter-space?sourceId=12` (R) returns the declared parameter ranges and limits. `POST /optimization/sweep` and `POST /optimization/walk-forward` (B, `Idempotency-Key` required) queue a `parameter_optimization` job whose result lists in-sample (selection) and out-of-sample (validation only) metrics separately, reports `bestParamsOutOfSample`, and saves the best parameters' runs to backtest history (`result.history`). Combination, concurrency, and daily caps return explicit 400/429 errors. See [Step 7 of the iteration guide](AGENT_STRATEGY_ITERATION.md#step-7-optimize-parameters-without-overfitting).
 
 Cancel a queued or running job with `POST /jobs/{job_id}/cancel` using B scope, confirmation at the MCP layer, and a new idempotency key. A running worker may finish its local computation, but it cannot overwrite the durable cancelled state.
 

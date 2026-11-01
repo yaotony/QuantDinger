@@ -553,15 +553,115 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         category="backtest",
         label_zh="提交回测",
         label_en="Submit backtest",
-        description_zh="提交异步 Strategy API V2 回测任务；标的、市场和周期由源码声明。",
-        description_en="Submit an asynchronous Strategy API V2 backtest; the source owns instruments, market, and frequency.",
+        description_zh="提交异步 Strategy API V2 回测任务；传内嵌 code 或已保存的 sourceId（可选 sourceVersion）二选一；标的、市场和周期由源码声明。",
+        description_en="Submit an asynchronous Strategy API V2 backtest from inline code or a saved sourceId (optional sourceVersion); the source owns instruments, market, and frequency.",
         route="/api/agent/v1/backtest/run",
-        requires=("code", "startDate", "endDate"),
+        requires=("code or sourceId", "startDate", "endDate"),
         produces=("backtest_job",),
         risk_level="write_draft",
         read_only=False,
         priority=89,
         safety="Backtest only; no orders are placed.",
+    ),
+    ToolDefinition(
+        id="mcp.get_optimization_parameter_space",
+        category="backtest",
+        label_zh="读取可优化参数空间",
+        label_en="Get optimization parameter space",
+        description_zh="读取已保存策略源码声明的可优化参数范围，以及组合数、并发和每日次数上限。",
+        description_en=(
+            "Read the optimizable parameter ranges a saved strategy source declares, plus the "
+            "combination, concurrency, and daily limits."
+        ),
+        route="/api/agent/v1/optimization/parameter-space",
+        requires=("sourceId",),
+        produces=("optimization_parameter_space",),
+        risk_level="read",
+        priority=86,
+    ),
+    ToolDefinition(
+        id="mcp.submit_parameter_sweep",
+        category="backtest",
+        label_zh="提交参数扫描",
+        label_en="Submit parameter sweep",
+        description_zh="对已保存策略源码提交异步参数扫描：样本内选参数、样本外只验证最佳参数；受组合数、并发和每日次数上限约束。",
+        description_en=(
+            "Submit an asynchronous parameter sweep on a saved source: select on the in-sample window, "
+            "validate only the best parameters out of sample; bounded by combination, concurrency, and daily limits."
+        ),
+        route="/api/agent/v1/optimization/sweep",
+        requires=("sourceId", "startDate", "endDate"),
+        produces=("optimization_job",),
+        risk_level="write_draft",
+        read_only=False,
+        priority=85,
+        safety="Backtest only; no orders are placed.",
+    ),
+    ToolDefinition(
+        id="mcp.submit_walk_forward",
+        category="backtest",
+        label_zh="提交 walk-forward",
+        label_en="Submit walk-forward study",
+        description_zh="对已保存策略源码提交异步 walk-forward：每折样本内选参数、样本外验证，并以保留区间验证最终参数。",
+        description_en=(
+            "Submit an asynchronous walk-forward study on a saved source: per-fold in-sample selection with "
+            "out-of-sample validation, and a final holdout check of the chosen parameters."
+        ),
+        route="/api/agent/v1/optimization/walk-forward",
+        requires=("sourceId", "startDate", "endDate"),
+        produces=("optimization_job",),
+        risk_level="write_draft",
+        read_only=False,
+        priority=84,
+        safety="Backtest only; no orders are placed.",
+    ),
+    ToolDefinition(
+        id="mcp.list_backtest_runs",
+        category="backtest",
+        label_zh="列出回测历史",
+        label_en="List backtest runs",
+        description_zh="按策略源码、策略或时间筛选回测历史并分页，每笔附报酬、最大回撤、交易数、胜率和总手续费。",
+        description_en=(
+            "List persisted backtest runs filtered by source, strategy, or time, with paging and "
+            "return, max drawdown, trade count, win rate, and total fees per run."
+        ),
+        route="/api/agent/v1/backtest/runs",
+        produces=("backtest_run_list",),
+        risk_level="read",
+        priority=88,
+    ),
+    ToolDefinition(
+        id="mcp.get_backtest_run",
+        category="backtest",
+        label_zh="读取回测结果",
+        label_en="Get backtest run",
+        description_zh="用 runId 读取一笔回测的完整结果。",
+        description_en="Read one backtest run's full stored result by runId.",
+        route="/api/agent/v1/backtest/runs/{run_id}",
+        requires=("run_id",),
+        produces=("backtest_result",),
+        risk_level="read",
+        priority=87,
+    ),
+    ToolDefinition(
+        id="mcp.get_backtest_report",
+        category="backtest",
+        label_zh="读取回测报告",
+        label_en="Get backtest report",
+        description_zh=(
+            "用 runId 读取 Markdown 回测报告（摘要、成本拆解、交易诊断、执行假设、警告与策略版本），"
+            "与 Backtest Center 下载的内容相同。"
+        ),
+        description_en=(
+            "Read one backtest run as the Markdown report (summary, cost breakdown, trade "
+            "diagnostics, execution assumptions, warnings, strategy version) that the Backtest "
+            "Center download also produces."
+        ),
+        route="/api/agent/v1/backtest/runs/{run_id}/report",
+        requires=("run_id",),
+        produces=("backtest_report",),
+        risk_level="read",
+        priority=86,
     ),
     ToolDefinition(
         id="mcp.list_jobs",

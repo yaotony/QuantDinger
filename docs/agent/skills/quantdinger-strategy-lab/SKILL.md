@@ -102,7 +102,7 @@ Zero executions are often a valid outcome: read `orderLedger` and `diagnostics.s
 ## Overfitting rules
 
 - **No parameter sweeps aimed at a return target.** Choose values from the hypothesis and market reasoning, not from a grid search over backtests.
-- **Tuning requires out-of-sample evidence.** When you change a parameter, confirm the choice on the untouched out-of-sample window (or a walk-forward sequence of non-overlapping windows). When the Gateway exposes a dedicated walk-forward or out-of-sample tool, use it instead of manual windows.
+- **Tuning requires out-of-sample evidence.** When you change a parameter, confirm the choice on the untouched out-of-sample window. To compare several values, use `submit_walk_forward` (or `submit_parameter_sweep`) on the saved source instead of manual windows: read `get_optimization_parameter_space` first, keep the ranges small, and judge the result by `bestParamsOutOfSample` (`passed`, `degradation`) and the per-fold `outOfSample` metrics, never by `inSample` alone.
 - **Prefer stable regions.** A parameter is credible when neighbouring values give similar results; a lone spike is noise.
 - **Fewer parameters, longer samples.** Every added rule or parameter needs a stated reason.
 - **Count your tries.** Report how many variants you backtested; the best of many is weaker evidence than the only one.
@@ -114,7 +114,7 @@ Keep one row per backtest and show the table in the final report:
 | # | Hypothesis / change | Source version | Params | Window | Costs | Trades | Return % | Max DD % | Win % | runId |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-Use `list_strategy_source_versions(source_id=...)` to recover version ids and `list_jobs(kind="backtest")` to recover job history.
+Use `list_strategy_source_versions(source_id=...)` to recover version ids and `list_backtest_runs(source_id=...)` to recover saved runs with their summary metrics; `get_backtest_run(run_id=...)` reads one run's full result.
 
 ## Final report
 
@@ -126,6 +126,8 @@ Every result you present carries:
 - **Cost assumptions**: the `commission` and `slippage` used, the doubled-cost result, and that Crypto funding is not modeled.
 - The diagnosis from step 6 and the iteration log.
 - What remains unproven: a backtest says nothing about live credentials, balances, venue minimums, or latency.
+
+For the chosen run, `get_backtest_report(run_id=..., language=...)` returns the Markdown report the user can also download from the Backtest Center. Quote its figures, cost breakdown, and warnings instead of retyping metrics.
 
 ## Gateway map
 
@@ -145,4 +147,10 @@ When MCP is not connected, call the Agent Gateway with `Authorization: Bearer $Q
 | `wait_for_job()`, `get_job()` | `GET /jobs/{job_id}` | R |
 | `stream_job_until_done()` | `GET /jobs/{job_id}/stream` | R |
 | `list_jobs()` | `GET /jobs` | R |
+| `list_backtest_runs()` | `GET /backtest/runs` | R |
+| `get_backtest_run()` | `GET /backtest/runs/{run_id}` | R |
+| `get_backtest_report()` | `GET /backtest/runs/{run_id}/report` | R |
+| `get_optimization_parameter_space()` | `GET /optimization/parameter-space` | R |
+| `submit_parameter_sweep()` | `POST /optimization/sweep` | B |
+| `submit_walk_forward()` | `POST /optimization/walk-forward` | B |
 | `create_strategy()` | `POST /strategies` | W |

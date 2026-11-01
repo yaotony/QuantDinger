@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import re
 from pathlib import Path
@@ -201,6 +202,74 @@ def test_agent_openapi_backtest_request_matches_accepted_fields():
     assert funding["default"] == FUNDING_MODE_NOT_MODELED
 
 
+def test_agent_openapi_documents_backtest_source_contract():
+    from app.routes.agent_v1 import backtests
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    request_schema = schemas["BacktestRequest"]
+    assert set(request_schema["properties"]) == backtests._BACKTEST_FIELDS
+    assert "code" not in request_schema["required"]
+    assert [alt["required"] for alt in request_schema["oneOf"]] == [["code"], ["sourceId"]]
+
+    ref = {"sourceId": 1, "versionId": 2, "versionNo": 3, "name": "internal"}
+    assert set(schemas["BacktestStrategySource"]["properties"]) == set(
+        backtests._public_source_ref(ref)
+    )
+    responses = spec["paths"]["/api/agent/v1/backtest/run"]["post"]["responses"]
+    assert "#/components/schemas/BacktestStrategySource" in json.dumps(responses["202"])
+    assert "404" in responses
+
+
+def test_agent_openapi_documents_optimization_contract():
+    from app.routes.agent_v1 import optimizations
+    from app.services.strategy_evolution import agent_optimization
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    requests = {
+        "sweep": schemas["OptimizationSweepRequest"],
+        "walkForward": schemas["OptimizationWalkForwardRequest"],
+    }
+    for mode, schema in requests.items():
+        assert set(schema["properties"]) == optimizations.REQUEST_FIELDS[mode], mode
+        assert "sourceId" in schema["required"]
+        assert set(schema["properties"]["objective"]["enum"]) == set(agent_optimization.OBJECTIVES)
+
+    limits = agent_optimization.OptimizationLimits(1, 1, 1).public()
+    assert set(schemas["OptimizationLimits"]["properties"]) == set(limits)
+    assert set(schemas["OptimizationLimits"]["required"]) == set(limits)
+    metrics = agent_optimization.public_metrics({})
+    assert set(schemas["OptimizationMetrics"]["properties"]) == set(metrics)
+    assert set(schemas["OptimizationMetrics"]["required"]) == set(metrics)
+    assert set(schemas["OptimizationResult"]["properties"]["mode"]["enum"]) == set(agent_optimization.MODES)
+    assert optimizations.OPTIMIZATION_JOB_KIND in schemas["Job"]["properties"]["kind"]["enum"]
+
+    for path in ("/api/agent/v1/optimization/sweep", "/api/agent/v1/optimization/walk-forward"):
+        operation = spec["paths"][path]["post"]
+        assert operation["x-scope-class"] == "B"
+        assert any(
+            item["name"] == "Idempotency-Key" and item["required"] for item in operation["parameters"]
+        )
+        responses = operation["responses"]
+        assert {"202", "400", "429"} <= set(responses)
+        assert "#/components/schemas/OptimizationLimitDetails" in json.dumps(responses["400"])
+        assert "#/components/schemas/OptimizationLimitDetails" in json.dumps(responses["429"])
+    route_source = (
+        BACKEND_ROOT / "backend_api_python" / "app" / "routes" / "agent_v1" / "optimizations.py"
+    ).read_text(encoding="utf-8")
+    documented_types = set(schemas["OptimizationLimitDetails"]["properties"]["error_type"]["enum"])
+    service_source = (
+        BACKEND_ROOT / "backend_api_python" / "app" / "services" / "strategy_evolution" / "agent_optimization.py"
+    ).read_text(encoding="utf-8")
+    raised_types = set(re.findall(r'"([A-Z]+(?:_[A-Z]+)*_LIMIT)"', route_source + service_source))
+    assert raised_types == documented_types
+
+
 def test_agent_openapi_documents_data_coverage_contract():
     from datetime import datetime
 
@@ -210,7 +279,7 @@ def test_agent_openapi_documents_data_coverage_contract():
         (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
     )
     schemas = spec["components"]["schemas"]
-    coverage = describe_data_coverage(
+    coverage =describe_data_coverage(
         market="Crypto",
         symbol="BTC/USDT",
         timeframe="15m",
@@ -281,6 +350,27 @@ def test_agent_openapi_documents_environment_contract():
 
     operation = spec["paths"]["/api/agent/v1/environment"]["get"]
     assert operation["x-scope-class"] == "R"
+
+
+def test_agent_openapi_documents_backtest_report_contract():
+    from app.routes.agent_v1 import backtest_runs
+    from app.services.strategy_v2.backtest_report import REPORT_LANGUAGES
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schema = spec["components"]["schemas"]["BacktestReport"]
+    route_source = inspect.getsource(backtest_runs.get_backtest_run_report)
+    for key in schema["required"]:
+        assert f'"{key}":' in route_source, key
+    assert set(schema["properties"]) == set(schema["required"])
+    assert schema["properties"]["language"]["enum"] == list(REPORT_LANGUAGES)
+
+    operation = spec["paths"]["/api/agent/v1/backtest/runs/{run_id}/report"]["get"]
+    assert operation["x-scope-class"] == "R"
+    language = next(item for item in operation["parameters"] if item["name"] == "language")
+    assert language["schema"]["enum"] == list(REPORT_LANGUAGES)
+    assert "#/components/schemas/BacktestReport" in json.dumps(operation["responses"]["200"])
 
 
 def test_mcp_metadata_matches_exported_tools_and_documented_routes():
