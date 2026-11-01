@@ -39,6 +39,7 @@ def register(app) -> None:
     from . import strategies  # noqa: F401
     from . import strategy_sources  # noqa: F401
     from . import backtests  # noqa: F401
+    from . import backtest_runs  # noqa: F401
     from . import portfolio  # noqa: F401
     from . import runtime  # noqa: F401
     from . import quick_trade  # noqa: F401

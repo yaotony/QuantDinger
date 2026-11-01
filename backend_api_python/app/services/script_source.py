@@ -415,6 +415,29 @@ class ScriptSourceService:
             cur.close()
         return self._version_row(row)
 
+    def get_version_by_number(
+        self, source_id: int, version_no: int, user_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Return one version snapshot by its per-source number, tenant-scoped.
+
+        Both the version row and its parent source must belong to ``user_id``.
+        """
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT v.id, v.source_id, v.user_id, v.version_no, v.name, v.description, v.code,
+                       v.template_key, v.param_schema, v.metadata, v.created_at
+                FROM qd_script_source_versions v
+                JOIN qd_script_sources s ON s.id = v.source_id
+                WHERE v.source_id = ? AND v.version_no = ? AND v.user_id = ? AND s.user_id = ?
+                """,
+                (int(source_id), int(version_no), int(user_id), int(user_id)),
+            )
+            row = cur.fetchone()
+            cur.close()
+        return self._version_row(row)
+
     def restore_version(self, version_id: int, user_id: int) -> Optional[Dict[str, Any]]:
         with get_db_connection() as db:
             cur = db.cursor()

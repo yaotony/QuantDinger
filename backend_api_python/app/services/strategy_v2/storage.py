@@ -68,8 +68,8 @@ class StrategyBacktestRepository:
                  params_json, manifest_json, engine_version, code_hash, status, error_message,
                  result_json, result_compacted, total_return, win_rate, total_trades, total_executions,
                  max_drawdown, sharpe_ratio, result_status, data_kind, benchmark_total_return,
-                 summary_backfilled, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', '', ?, TRUE, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, NOW())
+                 total_commission, summary_backfilled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', '', ?, TRUE, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, NOW())
                 """,
                 (
                     int(user_id),
@@ -109,6 +109,7 @@ class StrategyBacktestRepository:
                     str(result.get("resultStatus") or "unknown"),
                     str((result.get("dataProvenance") or {}).get("kind") or "unknown"),
                     _nullable_number(result.get("benchmarkTotalReturn")),
+                    _nullable_number(result.get("totalCommission")),
                 ),
             )
             run_id = int(cur.lastrowid or 0) or None
@@ -129,6 +130,8 @@ class StrategyBacktestRepository:
         symbol: str = "",
         market: str = "",
         timeframe: str = "",
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
     ) -> list[dict[str, Any]]:
         where = ["user_id = ?"]
         params: list[Any] = [int(user_id)]
@@ -138,6 +141,8 @@ class StrategyBacktestRepository:
             ("symbol = ?", symbol),
             ("market = ?", market),
             ("timeframe = ?", timeframe),
+            ("created_at >= ?", created_from),
+            ("created_at <= ?", created_to),
         ):
             if value not in (None, ""):
                 where.append(clause)
@@ -150,7 +155,7 @@ class StrategyBacktestRepository:
                        start_date, end_date, initial_capital, commission, slippage, leverage,
                        params_json, manifest_json, engine_version, code_hash, status, created_at,
                        total_return, win_rate, total_trades, total_executions, result_status,
-                       data_kind, benchmark_total_return, max_drawdown, sharpe_ratio
+                       data_kind, benchmark_total_return, max_drawdown, sharpe_ratio, total_commission
                 FROM qd_backtest_runs
                 WHERE {' AND '.join(where)}
                 ORDER BY id DESC
@@ -172,7 +177,8 @@ class StrategyBacktestRepository:
                        params_json, manifest_json, engine_version, code_hash, status,
                        CASE WHEN result_compacted THEN result_json ELSE '{}' END AS result_json,
                        result_compacted, total_return, win_rate, total_trades, total_executions,
-                       result_status, data_kind, benchmark_total_return, max_drawdown, sharpe_ratio, created_at
+                       result_status, data_kind, benchmark_total_return, max_drawdown, sharpe_ratio,
+                       total_commission, created_at
                 FROM qd_backtest_runs
                 WHERE id = ? AND user_id = ?
                 """,
@@ -331,6 +337,7 @@ class StrategyBacktestRepository:
             "benchmark_total_return": "benchmarkTotalReturn",
             "max_drawdown": "maxDrawdown",
             "sharpe_ratio": "sharpeRatio",
+            "total_commission": "totalCommission",
         }
         for column, field in summary_fields.items():
             value = item.get(column)

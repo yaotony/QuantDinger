@@ -198,6 +198,24 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         priority=98,
     ),
     ToolDefinition(
+        id="mcp.check_environment",
+        category="mcp",
+        label_zh="Agent 环境检查",
+        label_en="Agent environment check",
+        description_zh=(
+            "开始工作前一次检查连接、版本、Token 权限、是否仅限模拟盘、回测并发额度与回测区间上限，"
+            "每项给出通过/警告/失败与修正建议。"
+        ),
+        description_en=(
+            "Before starting work, check connectivity, version, token scopes, paper-only mode, "
+            "backtest concurrency quota, and range limits; each item is pass/warn/fail with a fix."
+        ),
+        route="/api/agent/v1/environment",
+        produces=("environment_report",),
+        risk_level="read",
+        priority=98,
+    ),
+    ToolDefinition(
         id="mcp.list_markets",
         category="market",
         label_zh="列出市场",
@@ -232,6 +250,22 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         route="/api/agent/v1/klines",
         requires=("market", "symbol", "timeframe"),
         produces=("klines",),
+        risk_level="read",
+        priority=94,
+    ),
+    ToolDefinition(
+        id="mcp.get_data_coverage",
+        category="market",
+        label_zh="查询数据覆盖范围",
+        label_en="Get data coverage",
+        description_zh="回测前查询最早可用K线时间、回测区间上限（含 warmup）以及预计区间是否可行。",
+        description_en=(
+            "Before a backtest, read the earliest available bar, the range limit "
+            "including warmup, and whether a planned range is feasible."
+        ),
+        route="/api/agent/v1/data-coverage",
+        requires=("market", "symbol", "timeframe"),
+        produces=("data_coverage",),
         risk_level="read",
         priority=94,
     ),
@@ -379,8 +413,7 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         route="/api/agent/v1/strategy-sources/compile",
         requires=("code_or_source_id",),
         produces=("strategy_manifest",),
-        risk_level="write_draft",
-        read_only=False,
+        risk_level="read",
         priority=93,
     ),
     ToolDefinition(
@@ -520,15 +553,43 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         category="backtest",
         label_zh="提交回测",
         label_en="Submit backtest",
-        description_zh="提交异步 Strategy API V2 回测任务；标的、市场和周期由源码声明。",
-        description_en="Submit an asynchronous Strategy API V2 backtest; the source owns instruments, market, and frequency.",
+        description_zh="提交异步 Strategy API V2 回测任务；传内嵌 code 或已保存的 sourceId（可选 sourceVersion）二选一；标的、市场和周期由源码声明。",
+        description_en="Submit an asynchronous Strategy API V2 backtest from inline code or a saved sourceId (optional sourceVersion); the source owns instruments, market, and frequency.",
         route="/api/agent/v1/backtest/run",
-        requires=("code", "startDate", "endDate"),
+        requires=("code or sourceId", "startDate", "endDate"),
         produces=("backtest_job",),
         risk_level="write_draft",
         read_only=False,
         priority=89,
         safety="Backtest only; no orders are placed.",
+    ),
+    ToolDefinition(
+        id="mcp.list_backtest_runs",
+        category="backtest",
+        label_zh="列出回测历史",
+        label_en="List backtest runs",
+        description_zh="按策略源码、策略或时间筛选回测历史并分页，每笔附报酬、最大回撤、交易数、胜率和总手续费。",
+        description_en=(
+            "List persisted backtest runs filtered by source, strategy, or time, with paging and "
+            "return, max drawdown, trade count, win rate, and total fees per run."
+        ),
+        route="/api/agent/v1/backtest/runs",
+        produces=("backtest_run_list",),
+        risk_level="read",
+        priority=88,
+    ),
+    ToolDefinition(
+        id="mcp.get_backtest_run",
+        category="backtest",
+        label_zh="读取回测结果",
+        label_en="Get backtest run",
+        description_zh="用 runId 读取一笔回测的完整结果。",
+        description_en="Read one backtest run's full stored result by runId.",
+        route="/api/agent/v1/backtest/runs/{run_id}",
+        requires=("run_id",),
+        produces=("backtest_result",),
+        risk_level="read",
+        priority=87,
     ),
     ToolDefinition(
         id="mcp.list_jobs",

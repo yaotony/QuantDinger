@@ -37,16 +37,19 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 | Tool group | Scope | Purpose |
 |---|---:|---|
 | `whoami`, `check_health` | R/public | Identity, allowlists, and liveness |
+| `check_environment` | R | One-call readiness check before starting work: connectivity, backend version, authentication, token scopes, paper-only mode, backtest concurrency quota (limit and active jobs), range limits by market and timeframe, and token expiry. Each entry in `checks` is `pass`/`warn`/`fail` with a `remediation` hint, and `overall` is the worst status. The report never contains the token or other secrets |
 | `list_markets`, `search_symbols`, `get_klines`, `get_price` | R | Market discovery and data |
+| `get_data_coverage` | R | Earliest available bar (`unknown` when the source cannot report it), backtest range limit including warmup, and range feasibility with suggested dates; same rule as `submit_backtest` |
 | Universe and factor tools | R | Point-in-time research inputs |
 | `list_watchlist`, `add_watchlist`, `remove_watchlist` | R/W | Watchlist workspace |
 | Indicator authoring, validation, save, link, and read tools | R/W | Chart-only indicators |
 | `list_strategy_templates` | R | Strategy API V2 system templates |
-| `compile_strategy_code` | W | Compile Strategy API V2 code to its canonical manifest |
+| `compile_strategy_code` | R | Compile Strategy API V2 code to its canonical manifest without saving (dedicated compile rate limit) |
 | `list_strategy_sources`, `get_strategy_source`, `save_strategy_source` | R/W | Private Strategy API V2 source library |
 | `list_strategy_source_versions`, `restore_strategy_source_version` | R/W | Source history and explicitly confirmed restore |
 | `create_strategy`, `update_strategy`, `list_strategies`, `get_strategy` | R/W | Strategy API V2 deployments |
 | `submit_backtest` | B | Strategy API V2 backtest job |
+| `list_backtest_runs`, `get_backtest_run` | R | Backtest history with summary metrics (return, max drawdown, trades, win rate, total fees) and full results by `runId` |
 | `list_jobs`, `get_job`, `wait_for_job`, `stream_job_until_done`, `cancel_job` | R/B | Bounded jobs and confirmed cancellation |
 | `runtime_overview`, `stop_strategy` | R/T | Runtime inspection and confirmed stop |
 | Broker account, strategy position/trade, and quick-trade observation tools | R | Secret-free execution observations |
@@ -64,7 +67,7 @@ Executable strategy code must define `initialize(context)` and declare its unive
 Compile and save a source before creating a stopped deployment:
 
 ```text
-compile_strategy_code(code="...Strategy API V2 Python...", idempotency_key="compile-btc-momentum-v1")
+compile_strategy_code(code="...Strategy API V2 Python...")
 save_strategy_source(name="btc-momentum", code="...Strategy API V2 Python...", idempotency_key="save-btc-momentum-v1")
 ```
 
@@ -94,7 +97,23 @@ submit_backtest(
 )
 ```
 
+Or backtest a saved source without resending code. Pass exactly one of `code` or `source_id`; `source_version` pins a version number and defaults to the latest. The receipt and job result report the version that ran as `strategySource`:
+
+```text
+submit_backtest(
+  source_id=12,
+  source_version=3,
+  start_date="2025-01-01",
+  end_date="2025-12-31",
+  idempotency_key="source-run-v3"
+)
+```
+
+`commission` and `slippage` are optional rates (for example `0.0005` = 0.05%). When omitted, the MCP server does not send them and the backend applies its defaults (currently `0.0005` each), so MCP and Backtest Center runs share the same cost assumptions. Pass explicit values only to override them.
+
 Market, symbol, and timeframe are not backtest parameters. They come from the compiled strategy manifest. Use `wait_for_job` or `stream_job_until_done` to obtain the result.
+
+The finished job's `result.runId` identifies the saved history record. Compare iterations with `list_backtest_runs` (filter by `source_id`, `strategy_id`, `symbol`, `market`, `timeframe`, `created_from`/`created_to`; page with `limit`/`offset` while `pagination.hasMore` is true). Each item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`. Read one run's full result with `get_backtest_run(run_id)`.
 
 Indicators are chart-only. Validate and save them through the indicator tools, then convert the idea into Strategy API V2 code before using `submit_backtest` or `create_strategy`.
 

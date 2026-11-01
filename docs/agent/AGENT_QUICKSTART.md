@@ -13,6 +13,8 @@ curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/whoami
 ```
 
+Before starting work, `GET /api/agent/v1/environment` (R scope; MCP `check_environment`) reports in one call the backend version, token scopes, paper-only mode, backtest concurrency quota, range limits by market and timeframe, and token expiry. Each check is `pass`, `warn`, or `fail` with a `remediation` hint; the MCP tool adds connectivity and authentication checks. The token itself is never returned.
+
 Scopes are `R` for reads, `W` for saved artifacts and deployment configuration, `B` for backtests, `N` for notification side effects, and `T` for runtime or order mutations. `C` is admin-only. Token permissions never bypass server-side live-trading controls.
 
 Every mutating W/B/N/T request requires a unique `Idempotency-Key` header. Reuse the same key only when retrying the exact same method, route, query, and body. The gateway atomically reserves the key, returns a stored completed response on replay, and rejects concurrent or mismatched reuse.
@@ -70,7 +72,15 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
+To backtest a saved source instead of resending code, send `"sourceId": 12` (optionally `"sourceVersion": 3`; the latest version when omitted) in place of `code`. Exactly one of `code` or `sourceId` is required, only your tenant's sources are accepted, and the receipt and job result report the version that ran as `strategySource`.
+
 Poll `/api/agent/v1/jobs/{job_id}` or consume `/api/agent/v1/jobs/{job_id}/stream`. Reuse an idempotency key when retrying the same submission.
+
+The submission checks the date range plus indicator warmup against the market and timeframe limit (for example 365 days for crypto `15m`) before it creates or bills a job. An oversized request returns HTTP 400 with `message: "strategyV2.backtestRangeLimit"` and `details` containing `max_days`, `warmup_days`, `recommended_start`, and `recommended_end`. When the warmup alone exceeds the limit, `recommendation_available` is `false` and the recommended dates are `null`; reduce the warmup or use a higher timeframe. If a job still fails for the same reason at run time (for example a dynamic universe), its `error` is the object `{code, message, details}` with the same `details`.
+
+To check a range before submitting, call `GET /api/agent/v1/data-coverage` (R scope; MCP `get_data_coverage`) with `market`, `symbol`, `timeframe`, and optionally `start_date`, `end_date`, and `warmup_bars`. It returns the earliest available bar (`unknown` when the data source cannot report it), the range limit including warmup, and whether the range is feasible with suggested dates, using the same rule as the submission check.
+
+For the full design-and-iterate loop, backtest range limits, and error handling, see [Agent strategy design and backtest iteration](AGENT_STRATEGY_ITERATION.md).
 
 Successful backtests also save a standard Backtest Center history record for the
 agent token's user. The completed job's `result.runId` identifies that record;
@@ -78,6 +88,21 @@ the initial submission still returns `job_id` while the run is queued. The resul
 keeps its existing metrics alongside `runId`. A persistence error fails the job
 instead of reporting a successful result without saved history. Jobs completed
 before this behavior was enabled are not automatically added to history.
+
+Read that history with R scope:
+
+```bash
+# Newest first; filter by sourceId, strategyId, symbol, market, timeframe,
+# createdFrom/createdTo (YYYY-MM-DD or ISO-8601); page with limit/offset.
+curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  "http://localhost:8888/api/agent/v1/backtest/runs?sourceId=12&limit=20"
+
+# Full stored result for one run
+curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  http://localhost:8888/api/agent/v1/backtest/runs/41
+```
+
+Each list item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`, so iterations can be compared without loading full results. `pagination.hasMore` and `nextOffset` drive paging. Runs saved before fee totals were stored report `totalFees: null` in the list; the single-run read falls back to `result.totalCommission`. Another tenant's `runId` returns 404.
 
 Cancel a queued or running job with `POST /jobs/{job_id}/cancel` using B scope, confirmation at the MCP layer, and a new idempotency key. A running worker may finish its local computation, but it cannot overwrite the durable cancelled state.
 

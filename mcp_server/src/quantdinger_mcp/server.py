@@ -32,9 +32,11 @@ from .security import (
 MCP_TOOL_NAMES = (
     "whoami",
     "check_health",
+    "check_environment",
     "list_markets",
     "search_symbols",
     "get_klines",
+    "get_data_coverage",
     "get_price",
     "list_strategies",
     "get_strategy",
@@ -64,6 +66,8 @@ MCP_TOOL_NAMES = (
     "list_strategy_source_versions",
     "restore_strategy_source_version",
     "submit_backtest",
+    "list_backtest_runs",
+    "get_backtest_run",
     "list_portfolio_positions",
     "list_paper_orders",
     "cancel_open_paper_orders",
@@ -199,6 +203,12 @@ def _idempotency_headers(key: str | None) -> dict[str, str]:
     return {"Idempotency-Key": value}
 
 
+def _positive_int_arg(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 def _request(method: str, path: str, **kwargs: Any) -> Any:
     try:
         return _unwrap(_client.request(method, path, **kwargs))
@@ -246,6 +256,8 @@ mcp = FastMCP(
     instructions=(
         "Tools for the QuantDinger self-hosted quant platform. "
         "All tools are tenant-scoped via the configured agent token. "
+        "Call check_environment first to confirm connectivity, token scopes, "
+        "paper-only mode, backtest quota, and range limits before starting work. "
         "Live order placement is available only through place_quick_order with "
         "T scope, confirm_order=true, and confirm_live_trading=true when the "
         "token is not paper-only. Server-side live trading flags still apply. "
@@ -265,7 +277,10 @@ mcp = FastMCP(
         "Use list_strategy_templates, compile_strategy_code, and "
         "save_strategy_source before create_strategy. Source versions can be "
         "listed and restored only with explicit confirmation. submit_backtest "
-        "accepts Strategy API V2 Python code. "
+        "accepts Strategy API V2 Python code, or a saved source_id (optionally "
+        "source_version; latest when omitted) so iterations need not resend code. "
+        "Compare iterations with list_backtest_runs (summary metrics) and "
+        "get_backtest_run (full result). "
         "Long jobs: use wait_for_job or stream_job_until_done (bounded). "
         "Never pass natural language to backtest `code`."
     ),
@@ -300,6 +315,131 @@ def check_health() -> Any:
     return body
 
 
+_STATUS_SEVERITY = {"pass": 0, "warn": 1, "fail": 2}
+_REISSUE_TOKEN_HINT = (
+    "Issue a new token via POST /api/agent/v1/me/tokens (human session), set it as "
+    "QUANTDINGER_AGENT_TOKEN, and restart the MCP server."
+)
+
+
+def _env_check(check_id: str, status: str, message: str, remediation: str | None = None) -> dict:
+    return {
+        "id": check_id,
+        "status": status,
+        "message": message,
+        "remediation": None if status == "pass" else remediation,
+    }
+
+
+def _gateway_failure_check(result: dict) -> dict:
+    status = int(result.get("status") or 0)
+    if status == 401:
+        return _env_check(
+            "authentication", "fail",
+            "The Agent Gateway rejected the token (HTTP 401): it is missing, invalid, "
+            "expired, or revoked.",
+            _REISSUE_TOKEN_HINT,
+        )
+    if status == 403:
+        return _env_check(
+            "authentication", "fail",
+            "The Agent Gateway denied the request (HTTP 403): the token lacks the R scope "
+            "or the client IP is not allowed.",
+            "Check the token scopes and IP allowlist. " + _REISSUE_TOKEN_HINT,
+        )
+    if status == 404:
+        return _env_check(
+            "authentication", "fail",
+            "The backend has no /api/agent/v1/environment endpoint (HTTP 404).",
+            "Upgrade the QuantDinger backend to a version that provides the environment check.",
+        )
+    if status == 429:
+        return _env_check(
+            "authentication", "warn",
+            "The token is rate limited (HTTP 429); the environment could not be read.",
+            "Wait a minute and retry, or issue a token with a higher rate_limit_per_min.",
+        )
+    return _env_check(
+        "authentication", "fail",
+        f"The Agent Gateway returned an error (HTTP {status or 'unknown'}).",
+        "Retry later; if it persists, ask the operator to check the backend logs.",
+    )
+
+
+def _scrub_value(value: Any, secrets_to_hide: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        return {key: _scrub_value(item, secrets_to_hide) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_scrub_value(item, secrets_to_hide) for item in value]
+    if isinstance(value, str):
+        for secret in secrets_to_hide:
+            if secret and secret in value:
+                value = value.replace(secret, "***")
+    return value
+
+
+@_tool
+def check_environment() -> Any:
+    """One-call readiness check before an agent starts working.
+
+    Reports backend connectivity and version, token scopes, whether the token
+    is paper-only, the backtest concurrency quota (limit and active jobs), and
+    the backtest range limits by market and timeframe. Every entry in
+    ``checks`` has ``status`` ``pass``/``warn``/``fail`` and, unless it
+    passes, a ``remediation`` hint; ``overall`` is the worst status. The
+    report never contains the token or other secrets.
+    """
+    checks: list[dict] = []
+    report: dict[str, Any] = {"checks": checks}
+
+    health = check_health()
+    if isinstance(health, dict) and not health.get("error"):
+        checks.append(_env_check(
+            "connectivity", "pass",
+            f"Agent Gateway is reachable (API {health.get('version') or 'v1'}).",
+        ))
+    else:
+        status = health.get("status") if isinstance(health, dict) else None
+        checks.append(_env_check(
+            "connectivity", "fail",
+            f"Agent Gateway health check failed (HTTP {status or 'unknown'}).",
+            "Check QUANTDINGER_BASE_URL, network access, and that the QuantDinger "
+            "backend is running.",
+        ))
+
+    if checks[0]["status"] == "pass":
+        env = _get("/api/agent/v1/environment")
+        if isinstance(env, dict) and env.get("error"):
+            checks.append(_gateway_failure_check(env))
+        elif isinstance(env, dict):
+            checks.append(_env_check("authentication", "pass", "Agent token accepted."))
+            checks.append(_env_check(
+                "version", "pass",
+                f"Backend version {env.get('app_version') or 'unknown'}, "
+                f"Agent API {env.get('api_version') or 'v1'}.",
+            ))
+            checks.extend(item for item in env.get("checks") or [] if isinstance(item, dict))
+            report["backend"] = {
+                "api_version": env.get("api_version"),
+                "app_version": env.get("app_version"),
+            }
+            for key in ("token", "backtest_quota", "backtest_range_limits"):
+                if key in env:
+                    report[key] = env[key]
+        else:
+            checks.append(_env_check(
+                "authentication", "fail",
+                "The Agent Gateway returned an unexpected environment payload.",
+                "Upgrade the QuantDinger backend or ask the operator to check the backend logs.",
+            ))
+
+    report["overall"] = max(
+        (item.get("status") if item.get("status") in _STATUS_SEVERITY else "fail" for item in checks),
+        key=_STATUS_SEVERITY.__getitem__,
+    )
+    return _scrub_value(redact_secrets(report, max_depth=8), (AGENT_TOKEN, MCP_AUTH_TOKEN))
+
+
 @_tool
 def list_markets() -> Any:
     """List markets the configured token is allowed to query."""
@@ -330,6 +470,41 @@ def get_klines(
     if before_time is not None:
         params["before_time"] = int(before_time)
     return _get("/api/agent/v1/klines", params=params)
+
+
+@_tool
+def get_data_coverage(
+    market: str,
+    symbol: str,
+    timeframe: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    warmup_bars: int = 0,
+    exchange_id: str | None = None,
+    market_type: str | None = None,
+) -> Any:
+    """Check data coverage before designing or submitting a backtest.
+
+    Returns the earliest available bar (``earliest_bar.status`` is
+    ``unknown`` when the data source cannot report it; no date is guessed),
+    the market/timeframe range limit with ``warmup_days`` and
+    ``max_selected_days``, and, when ``start_date``/``end_date``
+    (YYYY-MM-DD) are given, ``evaluation.feasible`` plus
+    ``recommended_start``/``recommended_end``. The range verdict uses the
+    same rule as ``submit_backtest``.
+    """
+    params: dict[str, Any] = {"market": market, "symbol": symbol, "timeframe": timeframe}
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    if warmup_bars:
+        params["warmup_bars"] = int(warmup_bars)
+    if exchange_id:
+        params["exchange_id"] = exchange_id
+    if market_type:
+        params["market_type"] = market_type
+    return _get("/api/agent/v1/data-coverage", params=params)
 
 
 @_tool
@@ -694,7 +869,12 @@ def compile_strategy_code(
     source_id: int | None = None,
     idempotency_key: str = "",
 ) -> Any:
-    """Compile Strategy API V2 code and return its canonical manifest without saving."""
+    """Compile Strategy API V2 code and return its canonical manifest without saving.
+
+    Requires only R scope: compilation never persists anything. It is subject
+    to a dedicated per-token/per-tenant compile quota (HTTP 429 when exceeded).
+    `idempotency_key` is optional and kept for backward compatibility.
+    """
     payload: dict[str, Any] = {}
     if code is not None:
         assert_code_size(code, label="Strategy code")
@@ -703,10 +883,11 @@ def compile_strategy_code(
         payload["source_id"] = int(source_id)
     if not payload:
         raise ValueError("code or source_id is required")
+    key = str(idempotency_key or "").strip()
     return _post(
         "/api/agent/v1/strategy-sources/compile",
         json=payload,
-        headers=_idempotency_headers(idempotency_key),
+        headers=_idempotency_headers(key) if key else None,
     )
 
 
@@ -795,33 +976,109 @@ def restore_strategy_source_version(
 
 @_tool
 def submit_backtest(
-    code: str,
-    start_date: str,
-    end_date: str,
+    code: str = "",
+    start_date: str = "",
+    end_date: str = "",
     initial_capital: float = 10000,
-    commission: float = 0.001,
+    commission: float | None = None,
     slippage: float | None = None,
     leverage_enabled: bool = False,
     leverage: float = 1.0,
     params: dict | None = None,
     idempotency_key: str = "",
+    source_id: int | None = None,
+    source_version: int | None = None,
 ) -> Any:
-    """Submit a Strategy API V2 backtest; its manifest owns market data scope."""
-    assert_code_size(code, label="Strategy code")
-    payload: dict[str, Any] = {
-        "code": code,
+    """Submit a Strategy API V2 backtest; its manifest owns market data scope.
+
+    Pass exactly one of ``code`` (inline source) or ``source_id`` (a saved
+    strategy source owned by this tenant). ``source_version`` picks a version
+    number of that source; omit it to run the latest version. The receipt and
+    the job result report the version that ran as ``strategySource``.
+
+    Omit ``commission`` and ``slippage`` to use the backend defaults (the same
+    cost assumptions as the Backtest Center); pass explicit rates to override.
+
+    A range that exceeds the market/timeframe limit (warmup included) is
+    rejected before a job is created: the gateway's 400 body, whose
+    ``details`` carry ``max_days``, ``warmup_days``, ``recommended_start``
+    and ``recommended_end``, is returned verbatim.
+    """
+    has_code = bool(str(code or "").strip())
+    if has_code == (source_id is not None):
+        raise ValueError("Provide exactly one of code or source_id")
+    if source_version is not None and source_id is None:
+        raise ValueError("source_version requires source_id")
+    payload: dict[str, Any] = {}
+    if has_code:
+        assert_code_size(code, label="Strategy code")
+        payload["code"] = code
+    else:
+        payload["sourceId"] = _positive_int_arg("source_id", source_id)
+        if source_version is not None:
+            payload["sourceVersion"] = _positive_int_arg("source_version", source_version)
+    payload.update({
         "startDate": start_date,
         "endDate": end_date,
         "initialCapital": initial_capital,
-        "commission": commission,
         "leverageEnabled": bool(leverage_enabled),
         "leverage": leverage,
         "params": assert_json_dict("params", params),
-    }
+    })
+    # Cost fields are only sent when set so the backend owns the defaults.
+    if commission is not None:
+        payload["commission"] = commission
     if slippage is not None:
         payload["slippage"] = slippage
     headers = _idempotency_headers(idempotency_key)
     return _post("/api/agent/v1/backtest/run", json=payload, headers=headers)
+
+
+@_tool
+def list_backtest_runs(
+    source_id: int | None = None,
+    strategy_id: int | None = None,
+    symbol: str = "",
+    market: str = "",
+    timeframe: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    limit: int = 20,
+    offset: int = 0,
+) -> Any:
+    """List persisted backtest runs (newest first) with summary metrics.
+
+    Each item has ``runId`` and ``metrics`` (totalReturn, maxDrawdown,
+    totalTrades, winRate, totalFees). Filter by source/strategy/symbol or by
+    creation time (``YYYY-MM-DD`` or ISO-8601). Page with ``offset`` while
+    ``pagination.hasMore`` is true. A finished backtest job's
+    ``result.runId`` identifies its run.
+    """
+    params: dict[str, Any] = {
+        "limit": max(1, min(100, int(limit))),
+        "offset": max(0, int(offset)),
+    }
+    if source_id is not None:
+        params["sourceId"] = int(source_id)
+    if strategy_id is not None:
+        params["strategyId"] = int(strategy_id)
+    for key, value in (
+        ("symbol", symbol),
+        ("market", market),
+        ("timeframe", timeframe),
+        ("createdFrom", created_from),
+        ("createdTo", created_to),
+    ):
+        text = str(value or "").strip()
+        if text:
+            params[key] = text
+    return _get("/api/agent/v1/backtest/runs", params=params)
+
+
+@_tool
+def get_backtest_run(run_id: int) -> Any:
+    """Read one backtest run's summary, manifest, and full stored result."""
+    return _get(f"/api/agent/v1/backtest/runs/{int(run_id)}")
 
 
 # Portfolio (read-only)

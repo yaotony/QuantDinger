@@ -6,7 +6,13 @@ from typing import Any
 from app.services.script_source import get_script_source_service
 from app.services.strategy_authoring import get_strategy_authoring_contract
 from app.services.strategy_v2 import canonical_source_metadata, compile_strategy_v2
-from app.utils.agent_auth import SCOPE_R, SCOPE_W, agent_required, current_user_id
+from app.utils.agent_auth import (
+    SCOPE_R,
+    SCOPE_W,
+    agent_operation_rate_limit,
+    agent_required,
+    current_user_id,
+)
 from app.utils.logger import get_logger
 from flask import request
 
@@ -15,6 +21,12 @@ from ._helpers import clip_int, envelope, error, get_json_or_400
 from ._security import assert_strategy_code_size
 
 logger = get_logger(__name__)
+
+# Dedicated compile quotas (per minute). Each compile may spawn a sandboxed
+# discovery subprocess bounded by STRATEGY_COMPILE_TIMEOUT_SECONDS and
+# STRATEGY_COMPILE_MEMORY_MB, so these stay well below the general token quota.
+COMPILE_RATE_LIMIT_PER_MIN_DEFAULT = 20
+TENANT_COMPILE_RATE_LIMIT_PER_MIN_DEFAULT = 60
 
 _LIST_FIELDS = (
     "id",
@@ -80,9 +92,23 @@ def list_strategy_templates():
 
 
 @agent_v1_bp.route("/strategy-sources/compile", methods=["POST"])
-@agent_required(SCOPE_W)
+@agent_required(SCOPE_R)
+@agent_operation_rate_limit(
+    "strategy_compile",
+    token_env="AGENT_COMPILE_RATE_LIMIT_PER_MIN",
+    token_default=COMPILE_RATE_LIMIT_PER_MIN_DEFAULT,
+    tenant_env="AGENT_TENANT_COMPILE_RATE_LIMIT_PER_MIN",
+    tenant_default=TENANT_COMPILE_RATE_LIMIT_PER_MIN_DEFAULT,
+)
 def compile_strategy_source():
-    """Compile Strategy API V2 source without persisting it."""
+    """Compile Strategy API V2 source without persisting it.
+
+    Read scope is sufficient because compilation has no persistent side
+    effects: it never writes sources, versions, jobs, or idempotency rows.
+    Discovery runs user code in the isolated, time- and memory-bounded
+    compile sandbox, so a dedicated compile quota caps compute per token
+    and per tenant on top of the general token quota.
+    """
     body, err = get_json_or_400()
     if err:
         return err

@@ -347,6 +347,64 @@ def _check_rate_limit(token_id: int, user_id: int, limit_per_min: int) -> dict[s
     return token_decision
 
 
+def _env_limit(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except Exception:
+        return max(1, int(default))
+
+
+def agent_operation_rate_limit(
+    operation: str,
+    *,
+    token_env: str,
+    token_default: int,
+    tenant_env: str,
+    tenant_default: int,
+):
+    """Flask decorator: add a dedicated per-token and per-tenant quota.
+
+    Apply *below* ``agent_required`` for operations that are cheap in scope
+    but expensive in compute (for example sandboxed strategy compilation).
+    The general token quota still applies; this bucket is additive and
+    isolated per ``operation`` so it cannot be drained by unrelated calls.
+    """
+    op = str(operation or "").strip()
+    if not op:
+        raise ValueError("operation is required")
+
+    def decorator(fn: Callable):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            row = current_token()
+            token_id = int(row.get("id") or 0)
+            user_id = int(row.get("user_id") or 0)
+            decision = _rate_limit_one(f"op:{op}:token:{token_id}", _env_limit(token_env, token_default))
+            if bool(decision["allowed"]):
+                tenant_decision = _rate_limit_one(
+                    f"op:{op}:tenant:{user_id}",
+                    _env_limit(tenant_env, tenant_default),
+                )
+                if not bool(tenant_decision["allowed"]):
+                    decision = tenant_decision
+            if not bool(decision["allowed"]):
+                resp, code = _err(
+                    429,
+                    f"Rate limit exceeded for {op}",
+                    details={"operation": op, "limit_per_min": decision.get("limit")},
+                    retriable=True,
+                    status=429,
+                )
+                response = make_response(resp, code)
+                response.headers["Retry-After"] = str(decision.get("reset", 1))
+                return response
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 # ─────────────────────────── verification ───────────────────────────
 
 def _extract_bearer() -> Optional[str]:
@@ -491,7 +549,7 @@ def _with_rate_headers(response, decision: dict[str, int | bool]):
     response.headers["X-RateLimit-Limit"] = str(decision.get("limit", 0))
     response.headers["X-RateLimit-Remaining"] = str(decision.get("remaining", 0))
     response.headers["X-RateLimit-Reset"] = str(decision.get("reset", 0))
-    if response.status_code == 429:
+    if response.status_code == 429 and "Retry-After" not in response.headers:
         response.headers["Retry-After"] = str(decision.get("reset", 1))
     return response
 
