@@ -43,7 +43,7 @@
         "type": "object",
         "properties": {
           "job_id":      { "type": "string" },
-          "kind":        { "type": "string", "enum": ["backtest", "quick_trade_order"] },
+          "kind":        { "type": "string", "enum": ["backtest", "parameter_optimization", "quick_trade_order"] },
           "status":      { "type": "string", "enum": ["queued","running","succeeded","failed","cancelled"] },
           "request":     { "type": "object" },
           "result":      { "type": "object" },
@@ -355,6 +355,201 @@
           "sourceId":  { "type": "integer" },
           "versionId": { "type": "integer", "description": "Immutable version snapshot id" },
           "versionNo": { "type": "integer", "description": "Per-source version number" }
+        }
+      },
+      "OptimizationParameterRange": {
+        "type": "object",
+        "required": ["name"],
+        "description": "Narrows one declared parameter. Numeric `min`/`max` must stay inside the declared range and `step` must be positive (an integer for integer parameters). Undeclared or non-optimizable parameters are rejected.",
+        "properties": {
+          "name": { "type": "string" },
+          "min":  { "type": "number" },
+          "max":  { "type": "number" },
+          "step": { "type": "number", "minimum": 0, "exclusiveMinimum": true }
+        }
+      },
+      "OptimizationSweepRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceId", "startDate", "endDate"],
+        "description": "Parameter sweep on a saved, tenant-owned strategy source. Every combination is backtested on the in-sample window only; the best in-sample combination is then run once on the trailing out-of-sample window.",
+        "properties": {
+          "sourceId":         { "type": "integer", "minimum": 1 },
+          "sourceVersion":    { "type": "integer", "minimum": 1, "description": "Per-source version number; defaults to the latest version" },
+          "startDate":        { "type": "string", "format": "date" },
+          "endDate":          { "type": "string", "format": "date" },
+          "initialCapital":   { "type": "number", "default": 10000 },
+          "commission":       { "type": "number", "minimum": 0, "maximum": 1, "description": "Omit to use the backend default" },
+          "slippage":         { "type": "number", "minimum": 0, "maximum": 1, "description": "Omit to use the backend default" },
+          "leverageEnabled":  { "type": "boolean", "default": false },
+          "leverage":         { "type": "number", "minimum": 1, "default": 1 },
+          "parameterSpace":   { "type": "array", "items": { "$ref": "#/components/schemas/OptimizationParameterRange" }, "description": "Subset of the declared parameter space (GET /optimization/parameter-space). Omit to sweep every optimizable declared parameter over its declared range." },
+          "maxCombinations":  { "type": "integer", "minimum": 1, "description": "Evaluate an evenly sampled subset of this size instead of the full grid. Must not exceed `limits.maxCombinations`." },
+          "objective":        { "type": "string", "enum": ["sharpeRatio", "totalReturn"], "default": "sharpeRatio", "description": "In-sample ranking metric" },
+          "seed":             { "type": "integer", "minimum": 0, "default": 42 },
+          "embargoBars":      { "type": "integer", "minimum": 0, "maximum": 1000, "default": 1, "description": "Bars skipped between the in-sample and out-of-sample windows" },
+          "outOfSampleRatio": { "type": "number", "minimum": 0.1, "maximum": 0.5, "default": 0.3, "description": "Share of bars reserved for the out-of-sample window" }
+        }
+      },
+      "OptimizationWalkForwardRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceId", "startDate", "endDate"],
+        "description": "Anchored walk-forward study on a saved, tenant-owned strategy source. Per fold, the combination with the best training (in-sample) objective is validated on that fold's following window. The final `bestParams` are chosen on the development window and validated once on the trailing holdout.",
+        "properties": {
+          "sourceId":        { "type": "integer", "minimum": 1 },
+          "sourceVersion":   { "type": "integer", "minimum": 1 },
+          "startDate":       { "type": "string", "format": "date" },
+          "endDate":         { "type": "string", "format": "date" },
+          "initialCapital":  { "type": "number", "default": 10000 },
+          "commission":      { "type": "number", "minimum": 0, "maximum": 1 },
+          "slippage":        { "type": "number", "minimum": 0, "maximum": 1 },
+          "leverageEnabled": { "type": "boolean", "default": false },
+          "leverage":        { "type": "number", "minimum": 1, "default": 1 },
+          "parameterSpace":  { "type": "array", "items": { "$ref": "#/components/schemas/OptimizationParameterRange" } },
+          "maxCombinations": { "type": "integer", "minimum": 1 },
+          "objective":       { "type": "string", "enum": ["sharpeRatio", "totalReturn"], "default": "sharpeRatio" },
+          "seed":            { "type": "integer", "minimum": 0, "default": 42 },
+          "embargoBars":     { "type": "integer", "minimum": 0, "maximum": 1000, "default": 1 },
+          "folds":           { "type": "integer", "minimum": 2, "maximum": 10, "default": 4 },
+          "trainRatio":      { "type": "number", "minimum": 0.3, "maximum": 0.85, "default": 0.5, "description": "Share of development bars in the first training window" },
+          "holdoutRatio":    { "type": "number", "minimum": 0.1, "maximum": 0.4, "default": 0.2, "description": "Share of bars reserved for the final holdout that no selection step sees" }
+        }
+      },
+      "OptimizationLimits": {
+        "type": "object",
+        "required": ["maxCombinations", "maxConcurrentPerTenant", "maxDailyPerTenant"],
+        "description": "Operator caps (`AGENT_OPTIMIZATION_MAX_COMBINATIONS`, `AGENT_OPTIMIZATION_MAX_CONCURRENT_PER_TENANT`, `AGENT_OPTIMIZATION_MAX_DAILY_PER_TENANT`). The daily window resets at 00:00 UTC.",
+        "properties": {
+          "maxCombinations":        { "type": "integer" },
+          "maxConcurrentPerTenant": { "type": "integer" },
+          "maxDailyPerTenant":      { "type": "integer" }
+        }
+      },
+      "OptimizationLimitDetails": {
+        "type": "object",
+        "description": "`details` of a rejected optimization submission.",
+        "required": ["error_type", "limit"],
+        "properties": {
+          "error_type":      { "type": "string", "enum": ["OPTIMIZATION_COMBINATION_LIMIT", "OPTIMIZATION_CONCURRENCY_LIMIT", "OPTIMIZATION_DAILY_LIMIT", "TENANT_CONCURRENCY_LIMIT", "TOKEN_CONCURRENCY_LIMIT"] },
+          "limit":           { "type": "integer" },
+          "requested":       { "type": "integer", "description": "Combination limit: combinations the request would evaluate" },
+          "searchSpaceSize": { "type": "integer", "description": "Combination limit: size of the full requested grid" },
+          "hint":            { "type": "string" },
+          "active":          { "type": "integer", "description": "Concurrency limit: queued or running optimization jobs" },
+          "used":            { "type": "integer", "description": "Daily limit: optimization jobs submitted today (UTC)" },
+          "resetAt":         { "type": "string", "format": "date-time", "description": "Daily limit: next reset (00:00 UTC)" }
+        }
+      },
+      "OptimizationReceipt": {
+        "type": "object",
+        "properties": {
+          "job_id":          { "type": "string" },
+          "status":          { "type": "string" },
+          "kind":            { "type": "string", "enum": ["parameter_optimization"] },
+          "created_at":      { "type": "string" },
+          "duplicate":       { "type": "boolean" },
+          "mode":            { "type": "string", "enum": ["sweep", "walkForward"] },
+          "combinations":    { "type": "integer", "description": "Combinations the job will evaluate (before declared constraints)" },
+          "searchSpaceSize": { "type": "integer" },
+          "strategySource":  { "$ref": "#/components/schemas/BacktestStrategySource" },
+          "limits":          { "$ref": "#/components/schemas/OptimizationLimits" }
+        }
+      },
+      "OptimizationMetrics": {
+        "type": "object",
+        "required": ["totalReturn", "sharpeRatio", "maxDrawdown", "winRate", "totalTrades", "activity", "bars"],
+        "properties": {
+          "totalReturn": { "type": "number", "description": "Percent" },
+          "sharpeRatio": { "type": "number" },
+          "maxDrawdown": { "type": "number", "description": "Percent, <= 0" },
+          "winRate":     { "type": "number", "description": "Percent" },
+          "totalTrades": { "type": "integer" },
+          "activity":    { "type": "integer", "description": "max(closed trades, executions); candidates with no activity are not ranked" },
+          "bars":        { "type": "integer" }
+        }
+      },
+      "OptimizationWindow": {
+        "type": "object",
+        "properties": {
+          "start": { "type": "string", "format": "date-time" },
+          "end":   { "type": "string", "format": "date-time" },
+          "bars":  { "type": "integer" }
+        }
+      },
+      "OptimizationBestOutOfSample": {
+        "type": "object",
+        "required": ["available"],
+        "description": "How `bestParams` performed on data no selection step used: the out-of-sample window (sweep) or the holdout (walk-forward). `available` is false with a `reason` when the range was too short for a holdout.",
+        "properties": {
+          "available":   { "type": "boolean" },
+          "reason":      { "type": "string" },
+          "window":      { "$ref": "#/components/schemas/OptimizationWindow" },
+          "metrics":     { "$ref": "#/components/schemas/OptimizationMetrics" },
+          "passed":      { "type": "boolean", "description": "Active and positive return out of sample" },
+          "degradation": {
+            "type": "object",
+            "properties": {
+              "totalReturnDelta": { "type": "number", "description": "Out-of-sample minus in-sample total return" },
+              "sharpeRatioDelta": { "type": "number" }
+            }
+          }
+        }
+      },
+      "OptimizationResult": {
+        "type": "object",
+        "description": "`result` of a finished `parameter_optimization` job. In-sample (selection) and out-of-sample (validation only) metrics are reported separately; `history` holds the backtest-history run ids of `bestParams` on both windows (readable with GET /backtest/runs/{run_id}).",
+        "required": ["mode", "objective", "bestParams", "inSample", "outOfSample", "bestParamsOutOfSample", "combinations", "history"],
+        "properties": {
+          "mode":       { "type": "string", "enum": ["sweep", "walkForward"] },
+          "objective":  { "type": "string", "enum": ["sharpeRatio", "totalReturn"] },
+          "plan":       { "type": "object", "description": "Window boundaries; walk-forward adds the fold plan and holdout bounds" },
+          "bestParams": { "type": "object" },
+          "inSample": {
+            "type": "object",
+            "properties": {
+              "window":             { "$ref": "#/components/schemas/OptimizationWindow" },
+              "usedForSelection":   { "type": "boolean", "enum": [true] },
+              "eligibleCandidates": { "type": "integer" },
+              "best":               { "$ref": "#/components/schemas/OptimizationMetrics" },
+              "topCandidates":      { "type": "array", "items": { "type": "object", "properties": { "rank": { "type": "integer" }, "params": { "type": "object" }, "metrics": { "$ref": "#/components/schemas/OptimizationMetrics" } } } },
+              "folds":              { "type": "array", "description": "Walk-forward only: each fold's training winner and its training metrics", "items": { "type": "object" } }
+            }
+          },
+          "outOfSample": {
+            "type": "object",
+            "properties": {
+              "usedForSelection": { "type": "boolean", "enum": [false] },
+              "window":           { "$ref": "#/components/schemas/OptimizationWindow" },
+              "best":             { "$ref": "#/components/schemas/OptimizationMetrics" },
+              "folds":            { "type": "array", "description": "Walk-forward only: each fold winner's validation metrics", "items": { "type": "object" } },
+              "summary":          { "type": "object", "description": "Walk-forward only: compoundedReturn, meanSharpeRatio, worstDrawdown, totalTrades, positiveFolds, validatedFolds, folds" },
+              "holdout":          { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/OptimizationBestOutOfSample" }] }
+            }
+          },
+          "bestParamsOutOfSample": { "$ref": "#/components/schemas/OptimizationBestOutOfSample" },
+          "parameterStability":    { "type": "object", "description": "Walk-forward only: distinctFoldWinners, foldsMatchingBestParams" },
+          "combinations": {
+            "type": "object",
+            "properties": {
+              "searchSpaceSize":    { "type": "integer" },
+              "requested":          { "type": "integer" },
+              "evaluated":          { "type": "integer" },
+              "constraintRejected": { "type": "integer" },
+              "coveragePercent":    { "type": "number" }
+            }
+          },
+          "settings": { "type": "object" },
+          "history": {
+            "type": "object",
+            "properties": {
+              "inSampleRunId":    { "type": "integer", "nullable": true },
+              "outOfSampleRunId": { "type": "integer", "nullable": true },
+              "persisted":        { "type": "boolean" },
+              "error":            { "type": "string" }
+            }
+          },
+          "strategySource": { "$ref": "#/components/schemas/BacktestStrategySource" }
         }
       },
       "StrategyDeploymentRequest": {
@@ -867,6 +1062,121 @@
           },
           "400": { "description": "Unsupported language" },
           "404": { "description": "Not found in this tenant" }
+        }
+      }
+    },
+    "/api/agent/v1/optimization/parameter-space": {
+      "get": {
+        "summary": "Declared parameter space of a strategy source plus optimization limits",
+        "description": "Returns the optimizable parameters declared by a tenant-owned strategy source version (the bounds every `parameterSpace` entry must stay within), the supported modes and objectives, and the operator limits.",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "query", "name": "sourceId",      "required": true,  "schema": { "type": "integer", "minimum": 1 } },
+          { "in": "query", "name": "sourceVersion", "required": false, "schema": { "type": "integer", "minimum": 1 }, "description": "Defaults to the latest version" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK; `data` has `parameters`, `scope`, `strategySource`, `modes`, `objectives`, and `limits` (`OptimizationLimits`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/Envelope" },
+                    { "type": "object", "properties": { "data": { "type": "object", "properties": {
+                      "parameters":     { "type": "array", "items": { "type": "object" } },
+                      "strategySource": { "$ref": "#/components/schemas/BacktestStrategySource" },
+                      "modes":          { "type": "array", "items": { "type": "string" } },
+                      "objectives":     { "type": "array", "items": { "type": "string" } },
+                      "limits":         { "$ref": "#/components/schemas/OptimizationLimits" }
+                    } } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing or invalid sourceId/sourceVersion" },
+          "403": { "description": "Strategy source code is hidden" },
+          "404": { "description": "Strategy source or version not found for this tenant" }
+        }
+      }
+    },
+    "/api/agent/v1/optimization/sweep": {
+      "post": {
+        "summary": "Submit a parameter sweep job (in-sample selection, out-of-sample validation)",
+        "description": "Queues a `parameter_optimization` job on a saved strategy source. The source version is pinned at submit time. The same compile, market/instrument allowlist, and range checks as POST /backtest/run apply. Every combination runs on the in-sample window; only the best one runs on the out-of-sample window. Poll GET /jobs/{job_id}; the result is an `OptimizationResult`. Limits: combinations per job (400), concurrent optimization jobs per tenant (429, retriable), optimization jobs per tenant per UTC day (429, not retriable until `resetAt`).",
+        "x-scope-class": "B",
+        "parameters": [
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OptimizationSweepRequest" } } } },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": { "application/json": { "schema": { "allOf": [
+              { "$ref": "#/components/schemas/Envelope" },
+              { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/OptimizationReceipt" } } }
+            ] } } }
+          },
+          "400": {
+            "description": "Invalid request, parameter range outside the declared space, compile or range failure, or combination limit exceeded (`details.error_type` `OPTIMIZATION_COMBINATION_LIMIT`)",
+            "content": { "application/json": { "schema": { "allOf": [
+              { "$ref": "#/components/schemas/Error" },
+              { "type": "object", "properties": { "details": { "oneOf": [
+                { "$ref": "#/components/schemas/OptimizationLimitDetails" },
+                { "$ref": "#/components/schemas/BacktestRangeLimitDetails" }
+              ] } } }
+            ] } } }
+          },
+          "403": { "description": "Market or instrument not allowed by the token, or the strategy source code is hidden" },
+          "404": { "description": "Strategy source or version not found for this tenant" },
+          "409": { "description": "Strategy source has no saved version, or Idempotency-Key reused with a different request" },
+          "429": {
+            "description": "Concurrency or daily limit reached",
+            "content": { "application/json": { "schema": { "allOf": [
+              { "$ref": "#/components/schemas/Error" },
+              { "type": "object", "properties": { "details": { "$ref": "#/components/schemas/OptimizationLimitDetails" } } }
+            ] } } }
+          }
+        }
+      }
+    },
+    "/api/agent/v1/optimization/walk-forward": {
+      "post": {
+        "summary": "Submit a walk-forward job (per-fold in-sample selection, out-of-sample validation)",
+        "description": "Queues a `parameter_optimization` job on a saved strategy source with anchored walk-forward folds and a trailing holdout. Same source pinning, safety checks, and limits as POST /optimization/sweep. Poll GET /jobs/{job_id}; the result is an `OptimizationResult`.",
+        "x-scope-class": "B",
+        "parameters": [
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OptimizationWalkForwardRequest" } } } },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": { "application/json": { "schema": { "allOf": [
+              { "$ref": "#/components/schemas/Envelope" },
+              { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/OptimizationReceipt" } } }
+            ] } } }
+          },
+          "400": {
+            "description": "Invalid request, parameter range outside the declared space, compile or range failure, or combination limit exceeded (`details.error_type` `OPTIMIZATION_COMBINATION_LIMIT`)",
+            "content": { "application/json": { "schema": { "allOf": [
+              { "$ref": "#/components/schemas/Error" },
+              { "type": "object", "properties": { "details": { "oneOf": [
+                { "$ref": "#/components/schemas/OptimizationLimitDetails" },
+                { "$ref": "#/components/schemas/BacktestRangeLimitDetails" }
+              ] } } }
+            ] } } }
+          },
+          "403": { "description": "Market or instrument not allowed by the token, or the strategy source code is hidden" },
+          "404": { "description": "Strategy source or version not found for this tenant" },
+          "409": { "description": "Strategy source has no saved version, or Idempotency-Key reused with a different request" },
+          "429": {
+            "description": "Concurrency or daily limit reached",
+            "content": { "application/json": { "schema": { "allOf": [
+              { "$ref": "#/components/schemas/Error" },
+              { "type": "object", "properties": { "details": { "$ref": "#/components/schemas/OptimizationLimitDetails" } } }
+            ] } } }
+          }
         }
       }
     },

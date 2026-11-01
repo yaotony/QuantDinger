@@ -1,0 +1,29 @@
+[project]
+name = "claude-cli-bridge"
+version = "0.1.0"
+description = "Local OpenAI-compatible bridge that serves chat completions through the Claude Code CLI"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+claude-cli-bridge = "claude_cli_bridge.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["claude_cli_bridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "W", "I"]

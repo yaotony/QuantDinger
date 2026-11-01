@@ -564,6 +564,58 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         safety="Backtest only; no orders are placed.",
     ),
     ToolDefinition(
+        id="mcp.get_optimization_parameter_space",
+        category="backtest",
+        label_zh="读取可优化参数空间",
+        label_en="Get optimization parameter space",
+        description_zh="读取已保存策略源码声明的可优化参数范围，以及组合数、并发和每日次数上限。",
+        description_en=(
+            "Read the optimizable parameter ranges a saved strategy source declares, plus the "
+            "combination, concurrency, and daily limits."
+        ),
+        route="/api/agent/v1/optimization/parameter-space",
+        requires=("sourceId",),
+        produces=("optimization_parameter_space",),
+        risk_level="read",
+        priority=86,
+    ),
+    ToolDefinition(
+        id="mcp.submit_parameter_sweep",
+        category="backtest",
+        label_zh="提交参数扫描",
+        label_en="Submit parameter sweep",
+        description_zh="对已保存策略源码提交异步参数扫描：样本内选参数、样本外只验证最佳参数；受组合数、并发和每日次数上限约束。",
+        description_en=(
+            "Submit an asynchronous parameter sweep on a saved source: select on the in-sample window, "
+            "validate only the best parameters out of sample; bounded by combination, concurrency, and daily limits."
+        ),
+        route="/api/agent/v1/optimization/sweep",
+        requires=("sourceId", "startDate", "endDate"),
+        produces=("optimization_job",),
+        risk_level="write_draft",
+        read_only=False,
+        priority=85,
+        safety="Backtest only; no orders are placed.",
+    ),
+    ToolDefinition(
+        id="mcp.submit_walk_forward",
+        category="backtest",
+        label_zh="提交 walk-forward",
+        label_en="Submit walk-forward study",
+        description_zh="对已保存策略源码提交异步 walk-forward：每折样本内选参数、样本外验证，并以保留区间验证最终参数。",
+        description_en=(
+            "Submit an asynchronous walk-forward study on a saved source: per-fold in-sample selection with "
+            "out-of-sample validation, and a final holdout check of the chosen parameters."
+        ),
+        route="/api/agent/v1/optimization/walk-forward",
+        requires=("sourceId", "startDate", "endDate"),
+        produces=("optimization_job",),
+        risk_level="write_draft",
+        read_only=False,
+        priority=84,
+        safety="Backtest only; no orders are placed.",
+    ),
+    ToolDefinition(
         id="mcp.list_backtest_runs",
         category="backtest",
         label_zh="列出回测历史",

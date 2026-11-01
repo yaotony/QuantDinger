@@ -23,6 +23,7 @@ Related references:
 | 4. Submit a backtest | `POST /backtest/run` | `submit_backtest` | B |
 | 5. Wait for the job | `GET /jobs/{job_id}` or `GET /jobs/{job_id}/stream` | `wait_for_job`, `stream_job_until_done` | R |
 | 6. Inspect history | `GET /backtest/runs`, `GET /backtest/runs/{run_id}`, `GET /backtest/runs/{run_id}/report`, `GET /strategy-sources/{id}/versions` | `list_backtest_runs`, `get_backtest_run`, `get_backtest_report`, `list_strategy_source_versions` | R |
+| 7. Optimize parameters | `GET /optimization/parameter-space`, `POST /optimization/sweep`, `POST /optimization/walk-forward` | `get_optimization_parameter_space`, `submit_parameter_sweep`, `submit_walk_forward` | R / B |
 
 All HTTP paths below are relative to `/api/agent/v1`. Every `POST`/`PATCH` that needs W, B, N, or T scope requires a unique `Idempotency-Key` header (at most 120 characters). Reuse a key only to retry the exact same request.
 
@@ -238,6 +239,43 @@ Compare runs of one `sourceId` side by side; equal `codeHash` values mean identi
 | Strategy version | Strategy name, `sourceId`, source version when the run recorded it, strategy id, code hash, engine version, parameters |
 
 A field the run did not record reads "No data" instead of failing the report, so runs saved before trade diagnostics still render. Quote the report rather than restating figures from memory.
+
+## Step 7: Optimize parameters without overfitting
+
+Hand-tuning one backtest at a time quietly fits the parameters to the whole range. Use an optimization job instead. Both modes run on a saved source (`sourceId`, optional `sourceVersion`; the version is pinned at submit time) and apply the same compile, market/instrument allowlist, and range checks as `POST /backtest/run`.
+
+1. Read the declared space with `GET /optimization/parameter-space?sourceId=12` (MCP `get_optimization_parameter_space`). Only optimizable parameters declared by the source can be swept, and each `parameterSpace` entry (`{"name", "min", "max", "step"}`) must stay inside the declared range. Omit `parameterSpace` to use every optimizable parameter over its declared range. The response also reports `limits`.
+2. Submit one of the two modes (B scope, `Idempotency-Key` required):
+
+| Mode | Endpoint / MCP tool | Selection (in sample) | Validation (out of sample) |
+| --- | --- | --- | --- |
+| Sweep | `POST /optimization/sweep` / `submit_parameter_sweep` | Every combination runs on the first part of the range; ranked by `objective` (`sharpeRatio` or `totalReturn`) | Only the best combination runs once on the last `outOfSampleRatio` (default 0.3) of the bars |
+| Walk-forward | `POST /optimization/walk-forward` / `submit_walk_forward` | Anchored folds (`folds`, `trainRatio`): each fold picks the best training combination; final `bestParams` are picked on the development window | Each fold winner is scored on the next window; `bestParams` run once on the trailing holdout (`holdoutRatio`, default 0.2) |
+
+```bash
+curl -s -X POST http://localhost:8888/api/agent/v1/optimization/walk-forward \
+  -H "Authorization: Bearer $QD_AGENT_TOKEN" \
+  -H "Idempotency-Key: wf-example" -H "Content-Type: application/json" \
+  -d '{"sourceId": 12, "startDate": "2023-01-01", "endDate": "2024-12-31",
+       "parameterSpace": [{"name": "fast", "min": 5, "max": 20, "step": 5}],
+       "folds": 4, "objective": "sharpeRatio"}'
+```
+
+3. Poll `GET /jobs/{job_id}` (kind `parameter_optimization`). The `result` keeps the two sides apart:
+   - `inSample` (`usedForSelection: true`): the best combination's metrics, `topCandidates`, and for walk-forward each fold's training winner.
+   - `outOfSample` (`usedForSelection: false`): metrics that never influenced the choice; walk-forward adds per-fold validation metrics and a stitched `summary`.
+   - `bestParamsOutOfSample`: how `bestParams` did out of sample, with `passed` (active and profitable) and `degradation` (out-of-sample minus in-sample return and Sharpe). Treat a large negative degradation or `passed: false` as overfitting.
+   - `history.inSampleRunId` / `history.outOfSampleRunId`: the best parameters' runs saved to backtest history; read them with `GET /backtest/runs/{run_id}` or find them with `GET /backtest/runs?sourceId=12`.
+
+### Optimization limits
+
+| Limit | Default (environment variable) | Response when exceeded |
+| --- | --- | --- |
+| Combinations per job | 200 (`AGENT_OPTIMIZATION_MAX_COMBINATIONS`) | 400, `details.error_type` `OPTIMIZATION_COMBINATION_LIMIT` with `limit`, `requested`, `searchSpaceSize`. Narrow ranges, raise `step`, or set `maxCombinations` to sample an even subset. |
+| Concurrent optimization jobs per tenant | 1 (`AGENT_OPTIMIZATION_MAX_CONCURRENT_PER_TENANT`) | 429, `OPTIMIZATION_CONCURRENCY_LIMIT`, `retriable: true`. Wait for the running job. |
+| Optimization jobs per tenant per UTC day | 20 (`AGENT_OPTIMIZATION_MAX_DAILY_PER_TENANT`) | 429, `OPTIMIZATION_DAILY_LIMIT`, `retriable: false`, with `used` and `resetAt`. |
+
+The general per-tenant and per-token concurrent job caps of `/backtest/run` also apply. A study that finds no candidate with trades fails with `parameterOptimization.noActiveCandidates`; a range too short to split fails with `parameterOptimization.rangeTooShort`.
 
 ## Backtest range limits
 
