@@ -36,7 +36,8 @@ def main() -> int:
     record = os.environ.get("FAKE_CLAUDE_RECORD")
     if record:
         with open(record, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"argv": argv, "stdin": stdin, "cwd": os.getcwd()}) + "\n")
+            entry = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(), "pid": os.getpid()}
+            handle.write(json.dumps(entry) + "\n")
 
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "echo")
     model = arg_value(argv, "--model", "sonnet")

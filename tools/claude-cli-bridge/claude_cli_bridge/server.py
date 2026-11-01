@@ -117,5 +117,69 @@ class BridgeHandler(BaseHTTPRequestHandler):
         model = str(body.get("model") or config.default_model).strip()
         prompt, system_prompt = build_prompt(body.get("messages"))
         completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+        if body.get("stream"):
+            self._stream_completion(config, prompt=prompt, model=model, system_prompt=system_prompt,
+                                    completion_id=completion_id)
+            return
         result = cli.run_once(config, prompt=prompt, model=model, system_prompt=system_prompt)
         self._send_json(200, completion_payload(result, completion_id))
+
+    def _stream_completion(
+        self,
+        config: BridgeConfig,
+        *,
+        prompt: str,
+        model: str,
+        system_prompt: str | None,
+        completion_id: str,
+    ) -> None:
+        stream = cli.CliStream(config, prompt=prompt, model=model, system_prompt=system_prompt)
+        created = int(time.time())
+        headers_sent = False
+
+        def chunk(delta: dict[str, Any], finish_reason: str | None = None, **extra: Any) -> dict[str, Any]:
+            return {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": stream.result.model if stream.result else model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+                **extra,
+            }
+
+        def send_headers() -> None:
+            nonlocal headers_sent
+            if headers_sent:
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            headers_sent = True
+            self._sse(chunk({"role": "assistant", "content": ""}))
+
+        try:
+            for text in stream:
+                send_headers()
+                self._sse(chunk({"content": text}))
+            send_headers()
+            usage = stream.result.usage if stream.result else None
+            self._sse(chunk({}, "stop", usage=usage))
+            self._sse_raw("[DONE]")
+        except BridgeError as error:
+            if not headers_sent:
+                raise
+            # Headers already went out: report the failure in-band, as OpenAI does.
+            self._sse(error.to_payload())
+            self._sse_raw("[DONE]")
+        finally:
+            stream.close()
+        self.close_connection = True
+
+    def _sse(self, payload: dict[str, Any]) -> None:
+        self._sse_raw(json.dumps(payload, ensure_ascii=False))
+
+    def _sse_raw(self, data: str) -> None:
+        self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+        self.wfile.flush()

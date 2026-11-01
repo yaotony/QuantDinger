@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -118,3 +120,103 @@ def run_once(
         model=model_from(payload, model),
         usage=usage_from(payload),
     )
+
+
+class CliStream:
+    """Iterate text deltas from ``claude -p --output-format stream-json``.
+
+    After iteration finishes, ``result`` holds the final CliResult. Call
+    ``close()`` to terminate the CLI early (for example on client disconnect).
+    """
+
+    def __init__(
+        self,
+        config: BridgeConfig,
+        *,
+        prompt: str,
+        model: str,
+        system_prompt: str | None,
+    ) -> None:
+        self.model = model
+        self.result: CliResult | None = None
+        command = build_command(config, model=model, system_prompt=system_prompt, output_format="stream-json")
+        try:
+            self._proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=isolated_workdir(config),
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            raise BridgeError(
+                f"Claude CLI not found at {config.claude_path!r}.",
+                status=503,
+                error_type="api_error",
+                code="cli_not_found",
+            ) from exc
+        assert self._proc.stdin is not None
+        try:
+            self._proc.stdin.write(prompt)
+            self._proc.stdin.close()
+        except BrokenPipeError:
+            pass
+
+    @property
+    def pid(self) -> int:
+        return self._proc.pid
+
+    def __iter__(self):
+        assert self._proc.stdout is not None
+        final: dict[str, Any] | None = None
+        for line in self._proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            kind = event.get("type")
+            if kind == "stream_event":
+                inner = event.get("event") or {}
+                delta = inner.get("delta") or {}
+                if inner.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+                    text = delta.get("text") or ""
+                    if text:
+                        yield text
+            elif kind == "result":
+                final = event
+        returncode = self._proc.wait()
+        stderr = self._proc.stderr.read() if self._proc.stderr else ""
+        if final is None or final.get("is_error") or returncode != 0:
+            message = (final or {}).get("result") or ""
+            raise cli_failure(str(message), stderr)
+        self.result = CliResult(
+            text=str(final.get("result") or ""),
+            model=model_from(final, self.model),
+            usage=usage_from(final),
+        )
+
+    def close(self) -> None:
+        terminate(self._proc)
+
+
+def terminate(proc: subprocess.Popen, grace_seconds: float = 2.0) -> None:
+    """Stop a CLI process group, escalating from SIGTERM to SIGKILL."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        proc.wait()
