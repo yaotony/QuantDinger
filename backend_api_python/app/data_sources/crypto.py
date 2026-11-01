@@ -491,7 +491,31 @@ class CryptoDataSource(BaseDataSource):
                     return fallback_ticker
 
         return {'last': 0, 'symbol': symbol}
-    
+
+    # Venues whose kline endpoint, given a start time before listing, returns
+    # candles ascending from the very first one. Window-based venues (OKX,
+    # Bybit, Bitget, Gate, HTX) would return an empty or recent page instead,
+    # so their first candle stays unknown rather than guessed.
+    _FIRST_CANDLE_FROM_EPOCH_VENUES = frozenset({"binance"})
+
+    def get_earliest_kline_time(self, symbol: str, timeframe: str) -> Optional[int]:
+        """Return the first candle's open time on venues that can report it."""
+        exchange_id = str(getattr(self.exchange, "id", "") or "").strip().lower()
+        if exchange_id not in self._FIRST_CANDLE_FROM_EPOCH_VENUES:
+            return None
+        exchange_timeframe = self.TIMEFRAME_MAP.get(timeframe)
+        exchange_timeframes = getattr(self.exchange, "timeframes", None) or {}
+        if not exchange_timeframe or exchange_timeframe not in exchange_timeframes:
+            return None
+        symbol_pair = self._symbol_for_scoped_market(symbol)
+        if not symbol_pair:
+            return None
+        rows = self.exchange.fetch_ohlcv(symbol_pair, exchange_timeframe, since=0, limit=1)
+        if not rows:
+            return None
+        opened_at = int(rows[0][0])
+        return opened_at // 1000 if opened_at > 10_000_000_000 else opened_at
+
     def get_kline(
         self,
         symbol: str,

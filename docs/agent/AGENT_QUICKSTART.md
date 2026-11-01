@@ -74,6 +74,8 @@ Poll `/api/agent/v1/jobs/{job_id}` or consume `/api/agent/v1/jobs/{job_id}/strea
 
 The submission checks the date range plus indicator warmup against the market and timeframe limit (for example 365 days for crypto `15m`) before it creates or bills a job. An oversized request returns HTTP 400 with `message: "strategyV2.backtestRangeLimit"` and `details` containing `max_days`, `warmup_days`, `recommended_start`, and `recommended_end`. When the warmup alone exceeds the limit, `recommendation_available` is `false` and the recommended dates are `null`; reduce the warmup or use a higher timeframe. If a job still fails for the same reason at run time (for example a dynamic universe), its `error` is the object `{code, message, details}` with the same `details`.
 
+To check a range before submitting, call `GET /api/agent/v1/data-coverage` (R scope; MCP `get_data_coverage`) with `market`, `symbol`, `timeframe`, and optionally `start_date`, `end_date`, and `warmup_bars`. It returns the earliest available bar (`unknown` when the data source cannot report it), the range limit including warmup, and whether the range is feasible with suggested dates, using the same rule as the submission check.
+
 For the full design-and-iterate loop, backtest range limits, and error handling, see [Agent strategy design and backtest iteration](AGENT_STRATEGY_ITERATION.md).
 
 Successful backtests also save a standard Backtest Center history record for the

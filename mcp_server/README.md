@@ -38,6 +38,7 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 |---|---:|---|
 | `whoami`, `check_health` | R/public | Identity, allowlists, and liveness |
 | `list_markets`, `search_symbols`, `get_klines`, `get_price` | R | Market discovery and data |
+| `get_data_coverage` | R | Earliest available bar (`unknown` when the source cannot report it), backtest range limit including warmup, and range feasibility with suggested dates; same rule as `submit_backtest` |
 | Universe and factor tools | R | Point-in-time research inputs |
 | `list_watchlist`, `add_watchlist`, `remove_watchlist` | R/W | Watchlist workspace |
 | Indicator authoring, validation, save, link, and read tools | R/W | Chart-only indicators |

@@ -236,6 +236,22 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         priority=94,
     ),
     ToolDefinition(
+        id="mcp.get_data_coverage",
+        category="market",
+        label_zh="查询数据覆盖范围",
+        label_en="Get data coverage",
+        description_zh="回测前查询最早可用K线时间、回测区间上限（含 warmup）以及预计区间是否可行。",
+        description_en=(
+            "Before a backtest, read the earliest available bar, the range limit "
+            "including warmup, and whether a planned range is feasible."
+        ),
+        route="/api/agent/v1/data-coverage",
+        requires=("market", "symbol", "timeframe"),
+        produces=("data_coverage",),
+        risk_level="read",
+        priority=94,
+    ),
+    ToolDefinition(
         id="mcp.get_price",
         category="market",
         label_zh="读取实时价格",

@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 58
+    assert len(fresh_module.MCP_TOOL_NAMES) == 59
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
@@ -321,6 +321,37 @@ def test_submit_backtest_returns_range_limit_details_verbatim(monkeypatch, fresh
         )
 
     assert out == {"error": True, "status": 400, "body": body}
+
+
+def test_get_data_coverage_forwards_query_and_is_read_only(monkeypatch, fresh_module):
+    seen = {}
+
+    def respond(request):
+        seen["path"] = request.url.path
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"code": 0, "message": "ok", "data": {
+            "earliest_bar": {"status": "unknown", "time": None, "timestamp": None},
+            "evaluation": {"feasible": False, "recommended_start": "2024-01-02"},
+        }})
+
+    with httpx.Client(base_url="http://fixture.test", transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        out = fresh_module.get_data_coverage(
+            "Crypto", "BTC/USDT", "15m",
+            start_date="2023-01-01", end_date="2024-12-31", warmup_bars=200,
+            exchange_id="binance", market_type="spot",
+        )
+
+    assert seen["path"] == "/api/agent/v1/data-coverage"
+    assert seen["params"] == {
+        "market": "Crypto", "symbol": "BTC/USDT", "timeframe": "15m",
+        "start_date": "2023-01-01", "end_date": "2024-12-31", "warmup_bars": "200",
+        "exchange_id": "binance", "market_type": "spot",
+    }
+    assert out["earliest_bar"]["status"] == "unknown"
+
+    tools = {tool.name: tool for tool in asyncio.run(fresh_module.mcp.list_tools())}
+    assert tools["get_data_coverage"].annotations.readOnlyHint is True
 
 
 def test_submit_backtest_cost_defaults_are_owned_by_backend(fresh_module):

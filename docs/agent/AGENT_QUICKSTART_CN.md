@@ -44,6 +44,8 @@ curl -X POST http://localhost:8888/api/agent/v1/strategies \
 
 回测异步执行。提交后轮询 `/jobs/{job_id}`，或订阅 `/jobs/{job_id}/stream`。提交时会先按市场与周期上限检查回测区间（含指标 warmup，例如加密货币 `15m` 为 365 天），超限时不建立也不计费任务，直接返回 HTTP 400，`message` 为 `strategyV2.backtestRangeLimit`，`details` 包含 `max_days`、`warmup_days`、`recommended_start`、`recommended_end`；若 warmup 本身已超限，`recommendation_available` 为 `false`、建议日期为 `null`，需减少 warmup 或改用更高周期。任务运行时因同类原因失败（如动态股票池）时，`error` 为 `{code, message, details}` 对象，`details` 结构相同。取消任务使用 `POST /jobs/{job_id}/cancel`，需要 `B` Scope、新幂等键以及 MCP 层确认。
 
+提交前可先调用 `GET /api/agent/v1/data-coverage`（`R` Scope；MCP 为 `get_data_coverage`）检查区间：传入 `market`、`symbol`、`timeframe`，可选 `start_date`、`end_date`、`warmup_bars`。返回数据源最早可用的 K 线时间（数据源无法提供时为 `unknown`，不做猜测）、含 warmup 的区间上限，以及区间是否可行和建议日期；判断规则与提交时的检查相同。
+
 完整的设计与迭代流程、回测区间上限和错误处理见 [Agent 策略设计与回测迭代流程](AGENT_STRATEGY_ITERATION_CN.md)。
 
 ## 4. 研究、指标与交易

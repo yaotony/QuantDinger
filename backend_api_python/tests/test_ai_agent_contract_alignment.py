@@ -185,6 +185,53 @@ def test_agent_openapi_documents_backtest_range_limit_contract():
     assert set(schemas["JobFailure"]["required"]) == {"code", "message", "details"}
 
 
+def test_agent_openapi_documents_data_coverage_contract():
+    from datetime import datetime
+
+    from app.services.data_coverage import describe_data_coverage
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    coverage = describe_data_coverage(
+        market="Crypto",
+        symbol="BTC/USDT",
+        timeframe="15m",
+        start_date=datetime(2023, 1, 1),
+        end_date=datetime(2024, 12, 31),
+        warmup_bars=200,
+        earliest_lookup=lambda **_: 1_502_928_000,
+    )
+    schema = schemas["DataCoverage"]
+    assert set(schema["properties"]) == set(coverage) == set(schema["required"])
+    for key in ("earliest_bar", "limits"):
+        assert set(schema["properties"][key]["properties"]) == set(coverage[key])
+        assert set(schema["properties"][key]["required"]) == set(coverage[key])
+
+    evaluation = coverage["evaluation"]
+    evaluation_schema = schemas["DataCoverageEvaluation"]
+    assert set(evaluation_schema["properties"]) == set(evaluation) == set(evaluation_schema["required"])
+    for key in ("range_check", "history_check"):
+        assert set(evaluation_schema["properties"][key]["properties"]) == set(evaluation[key])
+    violation = evaluation["range_check"]["violation"]
+    assert violation is not None
+    assert set(schemas["BacktestRangeLimitDetails"]["properties"]) == set(violation)
+
+    operation = spec["paths"]["/api/agent/v1/data-coverage"]["get"]
+    assert operation["x-scope-class"] == "R"
+    documented_params = {item["name"] for item in operation["parameters"]}
+    assert documented_params == {
+        "market", "symbol", "timeframe", "exchange_id", "market_type",
+        "start_date", "end_date", "warmup_bars",
+    }
+    route_source = (
+        BACKEND_ROOT / "backend_api_python" / "app" / "routes" / "agent_v1" / "markets.py"
+    ).read_text(encoding="utf-8")
+    for name in documented_params:
+        assert f'request.args.get("{name}")' in route_source, name
+
+
 def test_mcp_metadata_matches_exported_tools_and_documented_routes():
     metadata_names = {tool.id.removeprefix("mcp.") for tool in MCP_AGENT_TOOLS}
     assert metadata_names == _mcp_tool_names()

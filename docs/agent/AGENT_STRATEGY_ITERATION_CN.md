@@ -238,6 +238,30 @@ warmup 換算的日曆天數（`warmupBars` 取自 manifest）：
 
 送出前先規劃區間：用 manifest 算出最大可選區間；使用者想看更長歷史時，改用較高週期或縮短長回看參數。
 
+### 送出前查詢資料涵蓋範圍
+
+不必自己手算，可以直接問伺服器。`GET /data-coverage`（R 權限，不建立 job、不計費；MCP：`get_data_coverage`）輸入 `market`、`symbol`、`timeframe`，可選 `exchange_id`／`market_type`，以及預計的 `start_date`、`end_date`（兩者要一起給）與 `warmup_bars`（manifest 的 `warmupBars`）：
+
+```bash
+curl -G -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  http://localhost:8888/api/agent/v1/data-coverage \
+  --data-urlencode "market=Crypto" --data-urlencode "symbol=BTC/USDT" \
+  -d timeframe=15m -d start_date=2023-01-01 -d end_date=2024-12-31 -d warmup_bars=200
+```
+
+```text
+get_data_coverage(market="Crypto", symbol="BTC/USDT", timeframe="15m",
+                  start_date="2023-01-01", end_date="2024-12-31", warmup_bars=200)
+```
+
+回應內容：
+
+- `earliest_bar`：資料來源最早可用的 K 棒。資料來源無法提供時 `status` 為 `unknown`（`time` 為 `null`），不會猜測日期。目前只有走 Binance 的加密貨幣（`exchange_id=binance`）能回報。
+- `limits`：`max_days`、`warmup_days`、`max_selected_days`（扣掉 warmup 後 `endDate - startDate` 的上限）與 `warmup_fits`（光 warmup 就超限時為 false）。
+- `evaluation`（有給日期才有）：`feasible`、`range_check`（`ok` 與 `violation`；`violation` 就是送出回測時會拿到的 `details`）、`history_check`（對照最早 K 棒的結果：`ok`、`insufficient` 或 `unknown`），以及 `recommended_start`／`recommended_end`：保留結束日、且兩項檢查都通過的一組日期；找不到時為 `null`。
+
+`range_check` 和 `/backtest/run` 的預檢使用同一份規則，它判定可行的區間，送出時不會因長度被拒。源碼宣告多個週期或標的時逐一查詢，以最嚴格的結果為準。動態 universe 仍在執行時檢查。
+
 ## 錯誤代碼與處理方式
 
 ### 送出時就被拒絕（`/backtest/run` 的 HTTP 回應）
