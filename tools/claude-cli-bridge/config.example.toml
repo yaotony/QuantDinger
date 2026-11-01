@@ -1,0 +1,34 @@
+# Claude CLI Bridge configuration.
+# Copy to ~/.config/claude-cli-bridge/config.toml (chmod 600). The install
+# script does this for you and fills in api_key and claude_path.
+# Every key can also be overridden with an environment variable named
+# CLAUDE_BRIDGE_<KEY>, for example CLAUDE_BRIDGE_PORT=18791.
+
+# Listen address. Keep 127.0.0.1: Docker Desktop containers still reach it
+# through host.docker.internal, and nothing else on the network can.
+host = "127.0.0.1"
+port = 18790
+
+# Bearer token clients must send. Use a random value of at least 16 characters.
+api_key = "REPLACE_WITH_A_RANDOM_SECRET"
+
+# Absolute path to the Claude Code CLI (`command -v claude`).
+claude_path = "/Users/YOUR_NAME/.local/bin/claude"
+
+# Models exposed by /v1/models and accepted in requests. Only names listed here
+# are ever passed to the CLI. Add full ids such as "claude-sonnet-5-5" to pin
+# an exact model version.
+models = ["sonnet", "opus", "haiku"]
+default_model = "sonnet"
+# What to do with an unknown model name: "error" (404) or "default".
+unknown_model = "error"
+
+# System prompt used when a request has none (replaces the Claude Code persona).
+default_system_prompt = "You are a helpful assistant."
+
+# Concurrency and time limits.
+max_concurrency = 2
+# "queue" waits up to queue_timeout_seconds for a free slot, "reject" answers 429 at once.
+overflow = "queue"
+queue_timeout_seconds = 60
+request_timeout_seconds = 300
