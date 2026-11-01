@@ -23,6 +23,9 @@ class BridgeConfig:
     claude_path: str = "claude"
     default_model: str = "sonnet"
     default_system_prompt: str = "You are a helpful assistant."
+    models: tuple[str, ...] = ("sonnet", "opus", "haiku")
+    allow_claude_model_ids: bool = True
+    unknown_model: str = "error"
     workdir: str = ""
     max_body_bytes: int = 10 * 1024 * 1024
 
@@ -31,6 +34,14 @@ class BridgeConfig:
             raise ConfigError("api_key must be set to a random value of at least 16 characters")
         if not 0 <= self.port <= 65535:
             raise ConfigError("port must be between 0 and 65535")
+        if not self.models:
+            raise ConfigError("models must list at least one model alias")
+        if self.unknown_model not in {"error", "default"}:
+            raise ConfigError("unknown_model must be 'error' or 'default'")
+        if self.default_model not in self.models and not (
+            self.allow_claude_model_ids and self.default_model.startswith("claude-")
+        ):
+            raise ConfigError("default_model must be one of models")
         return self
 
 

@@ -9,7 +9,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from . import cli, json_mode
+from . import cli, json_mode, models
 from .config import BridgeConfig
 from .errors import BridgeError, bad_request, unauthorized
 from .messages import build_prompt
@@ -89,7 +89,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
     # ---- routing --------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802
-        self._dispatch({}.get(self.path.split("?", 1)[0]))
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/v1/models/"):
+            self._dispatch(lambda: self.retrieve_model(path[len("/v1/models/"):]))
+            return
+        self._dispatch({"/v1/models": self.list_models}.get(path))
 
     def do_POST(self) -> None:  # noqa: N802
         routes = {"/v1/chat/completions": self.chat_completions}
@@ -110,11 +114,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     # ---- endpoints ------------------------------------------------------
 
+    def list_models(self) -> None:
+        self._require_auth()
+        self._send_json(200, models.model_list(self.server.config))
+
+    def retrieve_model(self, name: str) -> None:
+        self._require_auth()
+        if not models.is_known(name, self.server.config):
+            raise models.model_not_found(name)
+        self._send_json(200, models.model_card(name))
+
     def chat_completions(self) -> None:
         self._require_auth()
         body = self._read_json()
         config = self.server.config
-        model = str(body.get("model") or config.default_model).strip()
+        model = models.resolve(body.get("model"), config)
         prompt, system_prompt = build_prompt(body.get("messages"))
         completion_id = f"chatcmpl-{uuid.uuid4().hex}"
         if json_mode.requested(body.get("response_format")):
