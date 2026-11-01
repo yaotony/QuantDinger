@@ -22,7 +22,7 @@
 | 3. 儲存或更新源碼 | `POST /strategy-sources`、`PATCH /strategy-sources/{id}` | `save_strategy_source` | W |
 | 4. 送出回測 | `POST /backtest/run` | `submit_backtest` | B |
 | 5. 等待 job 結果 | `GET /jobs/{job_id}` 或 `GET /jobs/{job_id}/stream` | `wait_for_job`、`stream_job_until_done` | R |
-| 6. 查詢歷史 | `GET /jobs?kind=backtest`、`GET /strategy-sources/{id}/versions` | `list_jobs`、`list_strategy_source_versions` | R |
+| 6. 查詢歷史 | `GET /backtest/runs`、`GET /backtest/runs/{run_id}`、`GET /strategy-sources/{id}/versions` | `list_backtest_runs`、`get_backtest_run`、`list_strategy_source_versions` | R |
 
 以下 HTTP 路徑都相對於 `/api/agent/v1`。所有需要 W、B、N、T 權限的 `POST`／`PATCH` 都必須帶唯一的 `Idempotency-Key` 標頭（最多 120 個字元）；只有在重試「完全相同」的請求時才可重用同一個 key。
 
@@ -209,6 +209,20 @@ MCP：`wait_for_job(job_id)` 會輪詢到結束狀態；`stream_job_until_done(j
 3. 有希望的版本要在第二段不重疊的區間、以及更高的手續費／滑價下重跑。成本稍微提高就消失的優勢並不穩健。
 4. 避免針對單一時期調參。偏好較少參數、較寬的穩定區域。
 5. 達到使用者設定的標準就停止；或在有限輪數後如實回報沒有達標。
+
+### 用回測歷史比較各輪結果
+
+`GET /backtest/runs`（MCP `list_backtest_runs`）依時間由新到舊列出本租戶存下的回測。可用 `sourceId`、`strategyId`、`symbol`、`market`、`timeframe`、`createdFrom`／`createdTo`（`YYYY-MM-DD` 或 ISO-8601）篩選；以 `limit`（上限 100）與 `offset` 分頁，`pagination.hasMore` 為 true 時還有下一頁。每筆都有 `params`、`codeHash`、日期區間與 `metrics`：
+
+| 指標 | 意義 |
+| --- | --- |
+| `totalReturn` | 總報酬（百分比） |
+| `maxDrawdown` | 最大回撤（百分比，負值） |
+| `totalTrades` | 完整來回交易數 |
+| `winRate` | 獲利交易比例（百分比） |
+| `totalFees` | 總手續費（帳戶幣別；手續費合計欄位上線前存的紀錄為 `null`） |
+
+把同一個 `sourceId` 的各輪放在一起比較；`codeHash` 相同代表程式碼相同，差異來自 `params` 或區間。要看細節時用 `GET /backtest/runs/{run_id}`（MCP `get_backtest_run`）讀取完整的 `result` 與 `manifest`。兩個端點都只需要 R 權限，也不會回傳其他租戶的紀錄。
 
 ## 回測區間上限
 

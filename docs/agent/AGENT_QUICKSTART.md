@@ -89,6 +89,21 @@ keeps its existing metrics alongside `runId`. A persistence error fails the job
 instead of reporting a successful result without saved history. Jobs completed
 before this behavior was enabled are not automatically added to history.
 
+Read that history with R scope:
+
+```bash
+# Newest first; filter by sourceId, strategyId, symbol, market, timeframe,
+# createdFrom/createdTo (YYYY-MM-DD or ISO-8601); page with limit/offset.
+curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  "http://localhost:8888/api/agent/v1/backtest/runs?sourceId=12&limit=20"
+
+# Full stored result for one run
+curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  http://localhost:8888/api/agent/v1/backtest/runs/41
+```
+
+Each list item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`, so iterations can be compared without loading full results. `pagination.hasMore` and `nextOffset` drive paging. Runs saved before fee totals were stored report `totalFees: null` in the list; the single-run read falls back to `result.totalCommission`. Another tenant's `runId` returns 404.
+
 Cancel a queued or running job with `POST /jobs/{job_id}/cancel` using B scope, confirmation at the MCP layer, and a new idempotency key. A running worker may finish its local computation, but it cannot overwrite the durable cancelled state.
 
 ## Indicators

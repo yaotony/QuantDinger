@@ -94,6 +94,74 @@
           "recommended_end":          { "type": "string", "format": "date", "nullable": true, "description": "End date that fits when keeping the requested start date" }
         }
       },
+      "BacktestRunMetrics": {
+        "type": "object",
+        "description": "Summary metrics. Values are null when the run did not record them (for example `totalFees` on runs persisted before fee totals were stored; read the run to get `result.totalCommission`).",
+        "properties": {
+          "totalReturn":          { "type": "number", "nullable": true, "description": "Total return in percent" },
+          "maxDrawdown":          { "type": "number", "nullable": true, "description": "Maximum drawdown in percent (negative)" },
+          "totalTrades":          { "type": "integer", "nullable": true, "description": "Closed trades" },
+          "winRate":              { "type": "number", "nullable": true, "description": "Winning closed trades in percent" },
+          "totalFees":            { "type": "number", "nullable": true, "description": "Total commission paid, in account currency" },
+          "sharpeRatio":          { "type": "number", "nullable": true },
+          "totalExecutions":      { "type": "integer", "nullable": true },
+          "benchmarkTotalReturn": { "type": "number", "nullable": true }
+        }
+      },
+      "BacktestRunSummary": {
+        "type": "object",
+        "properties": {
+          "runId":          { "type": "integer" },
+          "strategyId":     { "type": "integer", "nullable": true },
+          "sourceId":       { "type": "integer", "nullable": true },
+          "strategyName":   { "type": "string" },
+          "market":         { "type": "string" },
+          "symbol":         { "type": "string" },
+          "marketType":     { "type": "string" },
+          "timeframe":      { "type": "string" },
+          "startDate":      { "type": "string" },
+          "endDate":        { "type": "string" },
+          "initialCapital": { "type": "number", "nullable": true },
+          "commission":     { "type": "number", "nullable": true },
+          "slippage":       { "type": "number", "nullable": true },
+          "leverage":       { "type": "number", "nullable": true },
+          "params":         { "type": "object" },
+          "engineVersion":  { "type": "string" },
+          "codeHash":       { "type": "string", "description": "Hash of the strategy source that produced the run; equal hashes mean identical code" },
+          "status":         { "type": "string" },
+          "resultStatus":   { "type": "string" },
+          "dataKind":       { "type": "string" },
+          "createdAt":      { "type": "string", "format": "date-time" },
+          "metrics":        { "$ref": "#/components/schemas/BacktestRunMetrics" }
+        }
+      },
+      "BacktestRunDetail": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BacktestRunSummary" },
+          {
+            "type": "object",
+            "properties": {
+              "manifest": { "type": "object", "description": "Compiled Strategy API V2 manifest" },
+              "result":   { "type": "object", "description": "Full stored backtest result (compacted history payload)" }
+            }
+          }
+        ]
+      },
+      "BacktestRunPage": {
+        "type": "object",
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/BacktestRunSummary" } },
+          "pagination": {
+            "type": "object",
+            "properties": {
+              "limit":      { "type": "integer" },
+              "offset":     { "type": "integer" },
+              "hasMore":    { "type": "boolean" },
+              "nextOffset": { "type": "integer", "nullable": true }
+            }
+          }
+        }
+      },
       "DataCoverage": {
         "type": "object",
         "description": "Returned in `data` by GET /data-coverage. The range verdict is produced by the same rule as the POST /backtest/run precheck and the job-time check.",
@@ -701,6 +769,64 @@
               }
             }
           }
+        }
+      }
+    },
+    "/api/agent/v1/backtest/runs": {
+      "get": {
+        "summary": "List persisted backtest runs with summary metrics",
+        "description": "Tenant-scoped backtest history (the same records as the Backtest Center history), newest first. Each item carries `metrics` (return, max drawdown, trade count, win rate, total fees). A finished backtest job's `result.runId` identifies its run. Pagination uses `limit`/`offset`; `pagination.hasMore` reports whether another page exists.",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "query", "name": "sourceId",    "required": false, "schema": { "type": "integer", "minimum": 1 }, "description": "Only runs of this Strategy API V2 source" },
+          { "in": "query", "name": "strategyId",  "required": false, "schema": { "type": "integer", "minimum": 1 }, "description": "Only runs of this strategy deployment" },
+          { "in": "query", "name": "symbol",      "required": false, "schema": { "type": "string" } },
+          { "in": "query", "name": "market",      "required": false, "schema": { "type": "string" } },
+          { "in": "query", "name": "timeframe",   "required": false, "schema": { "type": "string" } },
+          { "in": "query", "name": "createdFrom", "required": false, "schema": { "type": "string" }, "description": "Inclusive lower bound on run creation time: `YYYY-MM-DD` or ISO-8601 datetime (server-local wall clock)" },
+          { "in": "query", "name": "createdTo",   "required": false, "schema": { "type": "string" }, "description": "Inclusive upper bound on run creation time; a bare date covers the whole day" },
+          { "in": "query", "name": "limit",       "required": false, "schema": { "type": "integer", "default": 20, "minimum": 1, "maximum": 100 } },
+          { "in": "query", "name": "offset",      "required": false, "schema": { "type": "integer", "default": 0, "minimum": 0 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK; `data` is a `BacktestRunPage`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/Envelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/BacktestRunPage" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid filter value" }
+        }
+      }
+    },
+    "/api/agent/v1/backtest/runs/{run_id}": {
+      "get": {
+        "summary": "Get one backtest run including its full stored result",
+        "description": "Returns the run summary plus `manifest` and the full stored `result` (equity curve, trades, executions, attribution). Runs owned by another tenant return 404.",
+        "x-scope-class": "R",
+        "parameters": [{ "in": "path", "name": "run_id", "required": true, "schema": { "type": "integer" } }],
+        "responses": {
+          "200": {
+            "description": "OK; `data` is a `BacktestRunDetail`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/Envelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/BacktestRunDetail" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "404": { "description": "Not found in this tenant" }
         }
       }
     },

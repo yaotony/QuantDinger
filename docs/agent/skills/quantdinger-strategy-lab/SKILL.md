@@ -113,7 +113,7 @@ Keep one row per backtest and show the table in the final report:
 | # | Hypothesis / change | Source version | Params | Window | Costs | Trades | Return % | Max DD % | Win % | runId |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-Use `list_strategy_source_versions(source_id=...)` to recover version ids and `list_jobs(kind="backtest")` to recover job history.
+Use `list_strategy_source_versions(source_id=...)` to recover version ids and `list_backtest_runs(source_id=...)` to recover saved runs with their summary metrics; `get_backtest_run(run_id=...)` reads one run's full result.
 
 ## Final report
 
@@ -144,4 +144,6 @@ When MCP is not connected, call the Agent Gateway with `Authorization: Bearer $Q
 | `wait_for_job()`, `get_job()` | `GET /jobs/{job_id}` | R |
 | `stream_job_until_done()` | `GET /jobs/{job_id}/stream` | R |
 | `list_jobs()` | `GET /jobs` | R |
+| `list_backtest_runs()` | `GET /backtest/runs` | R |
+| `get_backtest_run()` | `GET /backtest/runs/{run_id}` | R |
 | `create_strategy()` | `POST /strategies` | W |

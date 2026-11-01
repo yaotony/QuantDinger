@@ -22,7 +22,7 @@ Related references:
 | 3. Save or update the source | `POST /strategy-sources`, `PATCH /strategy-sources/{id}` | `save_strategy_source` | W |
 | 4. Submit a backtest | `POST /backtest/run` | `submit_backtest` | B |
 | 5. Wait for the job | `GET /jobs/{job_id}` or `GET /jobs/{job_id}/stream` | `wait_for_job`, `stream_job_until_done` | R |
-| 6. Inspect history | `GET /jobs?kind=backtest`, `GET /strategy-sources/{id}/versions` | `list_jobs`, `list_strategy_source_versions` | R |
+| 6. Inspect history | `GET /backtest/runs`, `GET /backtest/runs/{run_id}`, `GET /strategy-sources/{id}/versions` | `list_backtest_runs`, `get_backtest_run`, `list_strategy_source_versions` | R |
 
 All HTTP paths below are relative to `/api/agent/v1`. Every `POST`/`PATCH` that needs W, B, N, or T scope requires a unique `Idempotency-Key` header (at most 120 characters). Reuse a key only to retry the exact same request.
 
@@ -209,6 +209,20 @@ Iteration rules:
 3. Re-run promising variants on a second, non-overlapping date range and with higher commission/slippage. An edge that disappears under small cost changes is not robust.
 4. Avoid tuning parameters to one period. Prefer fewer parameters and wider stable regions.
 5. Stop when the strategy meets the user's stated criteria, or report that it does not after a bounded number of iterations.
+
+### Compare iterations from backtest history
+
+`GET /backtest/runs` (MCP `list_backtest_runs`) lists the tenant's saved runs newest first. Filter by `sourceId`, `strategyId`, `symbol`, `market`, `timeframe`, or `createdFrom`/`createdTo` (`YYYY-MM-DD` or ISO-8601), and page with `limit` (max 100) and `offset` while `pagination.hasMore` is true. Each item has `params`, `codeHash`, the date range, and `metrics`:
+
+| Metric | Meaning |
+| --- | --- |
+| `totalReturn` | Total return, percent |
+| `maxDrawdown` | Maximum drawdown, percent (negative) |
+| `totalTrades` | Closed round trips |
+| `winRate` | Winning closed trades, percent |
+| `totalFees` | Commission paid, account currency (`null` for runs saved before fee totals were stored) |
+
+Compare runs of one `sourceId` side by side; equal `codeHash` values mean identical code, so the difference comes from `params` or the range. Open a candidate with `GET /backtest/runs/{run_id}` (MCP `get_backtest_run`) to read the full `result` and `manifest`. Both endpoints only need R scope and never return another tenant's runs.
 
 ## Backtest range limits
 
