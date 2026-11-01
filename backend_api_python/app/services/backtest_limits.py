@@ -100,6 +100,40 @@ def backtest_range_policy(market: str, timeframe: str) -> BacktestRangePolicy:
     )
 
 
+def _policy_summary(policies: Dict[str, BacktestRangePolicy]) -> Dict[str, Dict[str, Any]]:
+    return {
+        timeframe: {
+            "max_days": policy.max_days,
+            "max_range": policy.label,
+            "reason": policy.reason,
+        }
+        for timeframe, policy in policies.items()
+    }
+
+
+def backtest_range_limit_summary(markets: Optional[Iterable[str]] = None) -> Dict[str, Any]:
+    """Summarize the range policy table for client-side planning.
+
+    ``default`` applies to every market without an override. ``markets`` lists
+    the per-market overrides, filtered to ``markets`` when given (``*`` or
+    ``None`` means all). ``max_days`` includes indicator warmup.
+    """
+    wanted = None
+    if markets is not None:
+        names = [str(item or "").strip() for item in markets]
+        if "*" not in names:
+            wanted = {DataSourceFactory.normalize_market(name) for name in names if name}
+    return {
+        "warmup_included": True,
+        "default": _policy_summary(_DEFAULT_LIMITS),
+        "markets": {
+            market: _policy_summary(policies)
+            for market, policies in _MARKET_LIMITS.items()
+            if wanted is None or market in wanted
+        },
+    }
+
+
 def backtest_warmup_calendar_days(timeframe: str, warmup_bars: int) -> int:
     bars = max(0, int(warmup_bars or 0))
     if bars == 0:

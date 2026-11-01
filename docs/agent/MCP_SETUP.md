@@ -46,6 +46,7 @@ Keep the configuration private. Prefer an environment-secret facility when the c
 
 ## Expected workflow
 
+- Start with `check_environment` to confirm connectivity, version, token scopes, paper-only mode, backtest quota, and range limits; follow the `remediation` of any `warn` or `fail` check.
 - Use market tools for discovery and OHLCV reads.
 - Use universe, factor, and watchlist tools for research workspace inputs.
 - Use indicator tools only for chart artifacts.

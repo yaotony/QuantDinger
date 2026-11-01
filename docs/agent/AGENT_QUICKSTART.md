@@ -13,6 +13,8 @@ curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/whoami
 ```
 
+Before starting work, `GET /api/agent/v1/environment` (R scope; MCP `check_environment`) reports in one call the backend version, token scopes, paper-only mode, backtest concurrency quota, range limits by market and timeframe, and token expiry. Each check is `pass`, `warn`, or `fail` with a `remediation` hint; the MCP tool adds connectivity and authentication checks. The token itself is never returned.
+
 Scopes are `R` for reads, `W` for saved artifacts and deployment configuration, `B` for backtests, `N` for notification side effects, and `T` for runtime or order mutations. `C` is admin-only. Token permissions never bypass server-side live-trading controls.
 
 Every mutating W/B/N/T request requires a unique `Idempotency-Key` header. Reuse the same key only when retrying the exact same method, route, query, and body. The gateway atomically reserves the key, returns a stored completed response on replay, and rejects concurrent or mismatched reuse.

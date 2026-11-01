@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 59
+    assert len(fresh_module.MCP_TOOL_NAMES) == 60
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
@@ -80,6 +80,121 @@ def test_health_success_stays_success(fresh_module, monkeypatch):
         monkeypatch.setattr(fresh_module, "_public_client", client)
         result = asyncio.run(fresh_module.mcp.call_tool("check_health", {}))
     assert not isinstance(result, CallToolResult) or result.isError is False
+
+
+_ENVIRONMENT = {
+    "service": "quantdinger-agent-gateway",
+    "api_version": "v1",
+    "app_version": "1.2.3",
+    "overall": "fail",
+    "token": {"agent_name": "example", "scopes": ["R"], "paper_only": True},
+    "backtest_quota": {"tenant_limit": 4, "tenant_active": 0, "token_limit": 2,
+                       "token_active": 0, "available": 2},
+    "backtest_range_limits": {"warmup_included": True, "default": {}, "markets": {}},
+    "checks": [
+        {"id": "scopes", "status": "fail", "message": "B scope is missing",
+         "remediation": "Issue a new token via POST /api/agent/v1/me/tokens"},
+        {"id": "paper_only", "status": "pass", "message": "paper", "remediation": None},
+    ],
+}
+
+
+def _environment_client(health_response, environment_response):
+    seen = []
+
+    def respond(request):
+        seen.append((request.url.path, request.headers.get("Authorization")))
+        if request.url.path.endswith("/health"):
+            return health_response(request)
+        return environment_response(request)
+
+    transport = httpx.MockTransport(respond)
+    return seen, transport
+
+
+def test_check_environment_merges_gateway_checks(monkeypatch, fresh_module):
+    seen, transport = _environment_client(
+        lambda _: httpx.Response(200, json={"status": "ok", "version": "v1"}),
+        lambda _: httpx.Response(200, json={"code": 0, "message": "ok", "data": _ENVIRONMENT}),
+    )
+    with httpx.Client(base_url="http://fixture.test", transport=transport) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        monkeypatch.setattr(fresh_module, "_public_client", client)
+        out = fresh_module.check_environment()
+
+    assert [path for path, _ in seen] == ["/api/agent/v1/health", "/api/agent/v1/environment"]
+    ids = [item["id"] for item in out["checks"]]
+    assert ids == ["connectivity", "authentication", "version", "scopes", "paper_only"]
+    checks = {item["id"]: item for item in out["checks"]}
+    assert checks["version"]["status"] == "pass" and "1.2.3" in checks["version"]["message"]
+    assert checks["scopes"]["status"] == "fail"
+    assert "/me/tokens" in checks["scopes"]["remediation"]
+    assert out["overall"] == "fail"
+    assert out["backend"] == {"api_version": "v1", "app_version": "1.2.3"}
+    assert out["backtest_quota"]["available"] == 2
+    assert "backtest_range_limits" in out and out["token"]["scopes"] == ["R"]
+
+    tools = {tool.name: tool for tool in asyncio.run(fresh_module.mcp.list_tools())}
+    assert tools["check_environment"].annotations.readOnlyHint is True
+
+
+def test_check_environment_reports_unreachable_backend(monkeypatch, fresh_module):
+    def down(request):
+        raise httpx.ConnectError("connection failed to qd_agent_test_token", request=request)
+
+    seen, transport = _environment_client(down, down)
+    with httpx.Client(base_url="http://fixture.test", transport=transport) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        monkeypatch.setattr(fresh_module, "_public_client", client)
+        out = fresh_module.check_environment()
+
+    assert [path for path, _ in seen] == ["/api/agent/v1/health"]
+    assert out["overall"] == "fail"
+    assert [item["id"] for item in out["checks"]] == ["connectivity"]
+    assert "QUANTDINGER_BASE_URL" in out["checks"][0]["remediation"]
+    assert "qd_agent_test_token" not in json.dumps(out)
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    (401, "fail"), (403, "fail"), (404, "fail"), (429, "warn"), (500, "fail"),
+])
+def test_check_environment_maps_gateway_errors(monkeypatch, fresh_module, status, expected):
+    _, transport = _environment_client(
+        lambda _: httpx.Response(200, json={"status": "ok"}),
+        lambda _: httpx.Response(status, json={"code": status, "message": "denied"}),
+    )
+    with httpx.Client(base_url="http://fixture.test", transport=transport) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        monkeypatch.setattr(fresh_module, "_public_client", client)
+        out = fresh_module.check_environment()
+
+    auth = out["checks"][1]
+    assert auth["id"] == "authentication"
+    assert auth["status"] == expected
+    assert auth["remediation"]
+    assert out["overall"] == expected
+    if status == 401:
+        assert "/me/tokens" in auth["remediation"]
+
+
+def test_check_environment_never_outputs_the_token(monkeypatch, fresh_module):
+    """Even a backend echoing the token back must not leak it through the report."""
+    leaky = json.loads(json.dumps(_ENVIRONMENT))
+    leaky["token"]["agent_name"] = "agent qd_agent_test_token"
+    leaky["token"]["access_token"] = "qd_agent_test_token"
+    leaky["checks"][0]["message"] = "Bearer qd_agent_test_token rejected"
+    _, transport = _environment_client(
+        lambda _: httpx.Response(200, json={"status": "ok"}),
+        lambda _: httpx.Response(200, json={"code": 0, "data": leaky}),
+    )
+    with httpx.Client(base_url="http://fixture.test", transport=transport) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        monkeypatch.setattr(fresh_module, "_public_client", client)
+        result = asyncio.run(fresh_module.mcp.call_tool("check_environment", {}))
+
+    text = result[0].text if isinstance(result, (list, tuple)) else result.content[0].text
+    assert "qd_agent_test_token" not in text
+    assert json.loads(text)["overall"] == "fail"
 
 
 def test_mcp_tools_are_actually_registered(fresh_module):
