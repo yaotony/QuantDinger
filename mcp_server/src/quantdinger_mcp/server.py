@@ -32,9 +32,11 @@ from .security import (
 MCP_TOOL_NAMES = (
     "whoami",
     "check_health",
+    "check_environment",
     "list_markets",
     "search_symbols",
     "get_klines",
+    "get_data_coverage",
     "get_price",
     "list_strategies",
     "get_strategy",
@@ -252,6 +254,8 @@ mcp = FastMCP(
     instructions=(
         "Tools for the QuantDinger self-hosted quant platform. "
         "All tools are tenant-scoped via the configured agent token. "
+        "Call check_environment first to confirm connectivity, token scopes, "
+        "paper-only mode, backtest quota, and range limits before starting work. "
         "Live order placement is available only through place_quick_order with "
         "T scope, confirm_order=true, and confirm_live_trading=true when the "
         "token is not paper-only. Server-side live trading flags still apply. "
@@ -307,6 +311,131 @@ def check_health() -> Any:
     return body
 
 
+_STATUS_SEVERITY = {"pass": 0, "warn": 1, "fail": 2}
+_REISSUE_TOKEN_HINT = (
+    "Issue a new token via POST /api/agent/v1/me/tokens (human session), set it as "
+    "QUANTDINGER_AGENT_TOKEN, and restart the MCP server."
+)
+
+
+def _env_check(check_id: str, status: str, message: str, remediation: str | None = None) -> dict:
+    return {
+        "id": check_id,
+        "status": status,
+        "message": message,
+        "remediation": None if status == "pass" else remediation,
+    }
+
+
+def _gateway_failure_check(result: dict) -> dict:
+    status = int(result.get("status") or 0)
+    if status == 401:
+        return _env_check(
+            "authentication", "fail",
+            "The Agent Gateway rejected the token (HTTP 401): it is missing, invalid, "
+            "expired, or revoked.",
+            _REISSUE_TOKEN_HINT,
+        )
+    if status == 403:
+        return _env_check(
+            "authentication", "fail",
+            "The Agent Gateway denied the request (HTTP 403): the token lacks the R scope "
+            "or the client IP is not allowed.",
+            "Check the token scopes and IP allowlist. " + _REISSUE_TOKEN_HINT,
+        )
+    if status == 404:
+        return _env_check(
+            "authentication", "fail",
+            "The backend has no /api/agent/v1/environment endpoint (HTTP 404).",
+            "Upgrade the QuantDinger backend to a version that provides the environment check.",
+        )
+    if status == 429:
+        return _env_check(
+            "authentication", "warn",
+            "The token is rate limited (HTTP 429); the environment could not be read.",
+            "Wait a minute and retry, or issue a token with a higher rate_limit_per_min.",
+        )
+    return _env_check(
+        "authentication", "fail",
+        f"The Agent Gateway returned an error (HTTP {status or 'unknown'}).",
+        "Retry later; if it persists, ask the operator to check the backend logs.",
+    )
+
+
+def _scrub_value(value: Any, secrets_to_hide: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        return {key: _scrub_value(item, secrets_to_hide) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_scrub_value(item, secrets_to_hide) for item in value]
+    if isinstance(value, str):
+        for secret in secrets_to_hide:
+            if secret and secret in value:
+                value = value.replace(secret, "***")
+    return value
+
+
+@_tool
+def check_environment() -> Any:
+    """One-call readiness check before an agent starts working.
+
+    Reports backend connectivity and version, token scopes, whether the token
+    is paper-only, the backtest concurrency quota (limit and active jobs), and
+    the backtest range limits by market and timeframe. Every entry in
+    ``checks`` has ``status`` ``pass``/``warn``/``fail`` and, unless it
+    passes, a ``remediation`` hint; ``overall`` is the worst status. The
+    report never contains the token or other secrets.
+    """
+    checks: list[dict] = []
+    report: dict[str, Any] = {"checks": checks}
+
+    health = check_health()
+    if isinstance(health, dict) and not health.get("error"):
+        checks.append(_env_check(
+            "connectivity", "pass",
+            f"Agent Gateway is reachable (API {health.get('version') or 'v1'}).",
+        ))
+    else:
+        status = health.get("status") if isinstance(health, dict) else None
+        checks.append(_env_check(
+            "connectivity", "fail",
+            f"Agent Gateway health check failed (HTTP {status or 'unknown'}).",
+            "Check QUANTDINGER_BASE_URL, network access, and that the QuantDinger "
+            "backend is running.",
+        ))
+
+    if checks[0]["status"] == "pass":
+        env = _get("/api/agent/v1/environment")
+        if isinstance(env, dict) and env.get("error"):
+            checks.append(_gateway_failure_check(env))
+        elif isinstance(env, dict):
+            checks.append(_env_check("authentication", "pass", "Agent token accepted."))
+            checks.append(_env_check(
+                "version", "pass",
+                f"Backend version {env.get('app_version') or 'unknown'}, "
+                f"Agent API {env.get('api_version') or 'v1'}.",
+            ))
+            checks.extend(item for item in env.get("checks") or [] if isinstance(item, dict))
+            report["backend"] = {
+                "api_version": env.get("api_version"),
+                "app_version": env.get("app_version"),
+            }
+            for key in ("token", "backtest_quota", "backtest_range_limits"):
+                if key in env:
+                    report[key] = env[key]
+        else:
+            checks.append(_env_check(
+                "authentication", "fail",
+                "The Agent Gateway returned an unexpected environment payload.",
+                "Upgrade the QuantDinger backend or ask the operator to check the backend logs.",
+            ))
+
+    report["overall"] = max(
+        (item.get("status") if item.get("status") in _STATUS_SEVERITY else "fail" for item in checks),
+        key=_STATUS_SEVERITY.__getitem__,
+    )
+    return _scrub_value(redact_secrets(report, max_depth=8), (AGENT_TOKEN, MCP_AUTH_TOKEN))
+
+
 @_tool
 def list_markets() -> Any:
     """List markets the configured token is allowed to query."""
@@ -337,6 +466,41 @@ def get_klines(
     if before_time is not None:
         params["before_time"] = int(before_time)
     return _get("/api/agent/v1/klines", params=params)
+
+
+@_tool
+def get_data_coverage(
+    market: str,
+    symbol: str,
+    timeframe: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    warmup_bars: int = 0,
+    exchange_id: str | None = None,
+    market_type: str | None = None,
+) -> Any:
+    """Check data coverage before designing or submitting a backtest.
+
+    Returns the earliest available bar (``earliest_bar.status`` is
+    ``unknown`` when the data source cannot report it; no date is guessed),
+    the market/timeframe range limit with ``warmup_days`` and
+    ``max_selected_days``, and, when ``start_date``/``end_date``
+    (YYYY-MM-DD) are given, ``evaluation.feasible`` plus
+    ``recommended_start``/``recommended_end``. The range verdict uses the
+    same rule as ``submit_backtest``.
+    """
+    params: dict[str, Any] = {"market": market, "symbol": symbol, "timeframe": timeframe}
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    if warmup_bars:
+        params["warmup_bars"] = int(warmup_bars)
+    if exchange_id:
+        params["exchange_id"] = exchange_id
+    if market_type:
+        params["market_type"] = market_type
+    return _get("/api/agent/v1/data-coverage", params=params)
 
 
 @_tool

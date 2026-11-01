@@ -18,6 +18,7 @@ The end-user installers live at the repository root:
 | `sync_env.py` | Add missing keys from `.env.example` without overwriting existing values. | Keep |
 | `bump_version.py` | Update the repo-root `VERSION` and `backend_api_python/VERSION` fallback files. | Keep |
 | `check_docs.py` | Validate documentation structure, local links, code fences, and referenced assets. | Keep |
+| `check_agent_skill.py` | Verify the Agent skill under `docs/agent/skills/` only references existing MCP tools, parameters, and Gateway paths. | Keep |
 | `check_mojibake.py` | Detect common text-encoding corruption in tracked files. | Keep |
 | `check_version.py` | Verify version fallback files stay aligned; used by CI. | Keep |
 

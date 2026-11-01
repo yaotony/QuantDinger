@@ -904,6 +904,49 @@ Inspect:
 - <code>equityCurve</code>, drawdown, win rate, Profit Factor, benchmark, and excess return.
 - <code>dataProvenance</code>/<code>executionAssumptions</code>: data origin and fill model.
 
+### Trade diagnostics
+
+Each <code>closedTrades</code> row carries diagnostic fields that explain where profit and loss came from. The web UI and the Agent API read the same fields.
+
+| Field | Meaning |
+|---|---|
+| <code>r_basis</code> | <code>initial_stop_loss</code> when the entry had a stop loss, otherwise <code>not_applicable</code>. |
+| <code>initial_stop_price</code> | <code>entry_price × (1 − stop_loss_pct)</code> for longs, <code>entry_price × (1 + stop_loss_pct)</code> for shorts; <code>null</code> without a stop. |
+| <code>initial_risk</code> | 1R in currency: <code>entry_price × stop_loss_pct × quantity</code>; <code>null</code> without a stop. |
+| <code>r_multiple</code> | Net <code>profit</code> (after commission and slippage) divided by <code>initial_risk</code>; <code>null</code> without a stop. |
+| <code>mae</code> / <code>mfe</code> | Maximum adverse / favorable excursion: the largest per-unit price move against / in favor of the position, measured from <code>entry_price</code>. Always non-negative. |
+| <code>mae_pct</code> / <code>mfe_pct</code> | The same excursions as a percentage of <code>entry_price</code>. |
+| <code>mae_r</code> / <code>mfe_r</code> | The same excursions in R; <code>null</code> without a stop. |
+| <code>holding_seconds</code> | <code>exit_time − entry_time</code> in seconds. |
+| <code>holding_bars</code> | Completed driving bars that ended while the position was open. |
+| <code>entry_slippage</code> / <code>exit_slippage</code> / <code>slippage_cost</code> | Modeled slippage paid on the entry share, the exit, and their sum. |
+| <code>trading_cost</code> | <code>commission + slippage_cost</code>. |
+| <code>profit_before_costs</code> | <code>profit + trading_cost</code>: the result at reference prices with no fees and no slippage. |
+
+Calculation rules:
+
+- 1R is anchored to the first stop loss attached to the entry (<code>stop_loss_pct</code> on the order or the default protection). Adding to a position does not reset it; the risk uses the trade's reported <code>entry_price</code>. Trailing stops, take-profit, and time limits do not define 1R.
+- MAE/MFE are measured at driving-bar granularity: the high/low of every completed bar while the position was open, plus the entry and exit fill prices. Intrabar moves in the exit bar before the exit are not observed.
+- Slippage is <code>|fill price − reference price| × quantity</code> for fills priced from a bar open (including protection exits). Limit fills and gap-open limit fills carry no modeled slippage. Entry slippage is allocated pro rata to partial closes, like entry commission.
+- Grid trades use the matched cell entry price and time.
+
+Run-level summary fields, always computed from the complete closed-trade list before history storage or delivery thins <code>closedTrades</code> (<code>tradeDiagnosticsBasis == "all_closed_trades"</code>, <code>tradeDiagnosticsTradeCount</code> is the full count):
+
+| Field | Meaning |
+|---|---|
+| <code>averageR</code> | Mean <code>r_multiple</code> over trades that have one; <code>null</code> when none do. |
+| <code>rMultipleTradeCount</code> | Number of trades included in <code>averageR</code>. |
+| <code>totalTradeCommission</code> / <code>totalSlippageCost</code> / <code>totalTradingCost</code> | Commission, slippage, and their sum over closed trades (open positions excluded; <code>totalCommission</code> still covers all executions). |
+| <code>grossProfitBeforeCosts</code> / <code>grossLossBeforeCosts</code> | Sum of positive / absolute sum of negative <code>profit_before_costs</code>. |
+| <code>costToGrossProfitPct</code> | <code>totalTradingCost / grossProfitBeforeCosts × 100</code>; <code>null</code> when there is no gross profit. |
+| <code>costToGrossLossPct</code> | <code>totalTradingCost / grossLossBeforeCosts × 100</code>; <code>null</code> when there is no gross loss. |
+| <code>expectancyBeforeCosts</code> / <code>expectancyAfterCosts</code> | Mean <code>profit_before_costs</code> / mean net <code>profit</code> per closed trade; <code>null</code> without trades. |
+| <code>averageHoldingSeconds</code>, <code>averageMaePct</code>, <code>averageMfePct</code> | Means of the matching per-trade fields. |
+
+Reading the diagnostics: a positive <code>expectancyBeforeCosts</code> with a negative <code>expectancyAfterCosts</code> means costs consume the edge; a high <code>costToGrossProfitPct</code> points to over-trading or too-small targets. Losers with <code>r_multiple</code> well below −1 mean exits slip past the stop (gaps or slippage). Winners with a large <code>mfe_r</code> but a small <code>r_multiple</code> give back open profit; losers with a small <code>mae</code> suggest stops placed inside normal noise.
+
+Older stored runs have no diagnostic fields; rerun the backtest to obtain them.
+
 ### Costs and execution assumptions
 
 - Commission is charged on every fill. A completed round trip deducts both allocated entry commission and exit commission from realized profit.

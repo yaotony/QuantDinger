@@ -37,6 +37,7 @@ from .contract import PLATFORM_MAX_LEVERAGE, CompiledStrategyV2, StrategyV2Contr
 from .data import MultiAssetDataPortal
 from .frequencies import normalize_frequency, periods_per_year
 from .protection import ProtectionDecision, ProtectionEngine, ProtectionSpec, ProtectionState
+from .trade_diagnostics import slippage_per_unit, summarize_trade_diagnostics, trade_diagnostics
 
 
 _PROTECTION_EXIT_REASONS = frozenset({
@@ -1527,7 +1528,23 @@ class MultiAssetSimulationBroker:
         self.portfolio.total_value = total
         return total
 
+    def _track_open_entry_excursions(self, portal: MultiAssetDataPortal, timestamp: Any) -> None:
+        """Extend each open entry's price range with the completed bar for MAE/MFE."""
+        for position_key, entry in self._entries.items():
+            position = self.portfolio.positions.get(position_key)
+            symbol = entry.get("symbol") or (position.symbol if position is not None else "")
+            if not symbol:
+                continue
+            bar = portal.bar_at(symbol, timestamp)
+            if bar is None:
+                continue
+            entry["bars"] = int(entry.get("bars") or 0) + 1
+            entry_price = float(entry.get("price") or 0.0)
+            entry["high"] = max(float(entry.get("high") or entry_price), float(bar["high"]))
+            entry["low"] = min(float(entry.get("low") or entry_price), float(bar["low"]))
+
     def record_equity(self, portal: MultiAssetDataPortal, timestamp: Any) -> None:
+        self._track_open_entry_excursions(portal, timestamp)
         value = self.mark_to_market(portal, timestamp)
         gross = sum(abs(item.market_value) for item in self.portfolio.positions.values())
         net = sum(item.market_value for item in self.portfolio.positions.values())
@@ -1589,6 +1606,8 @@ class MultiAssetSimulationBroker:
         fee = float(execution.get("commission") or 0.0)
         close_fee = fee * closing_quantity / total_quantity
         open_fee = fee - close_fee
+        fill_price = float(execution["price"])
+        unit_slippage = slippage_per_unit(execution)
 
         if closing_quantity > 1e-12:
             entry = self._entries.get(symbol) or {
@@ -1600,6 +1619,7 @@ class MultiAssetSimulationBroker:
             }
             entry_quantity = max(float(entry.get("quantity") or 0.0), closing_quantity)
             entry_fee = float(entry.get("commission") or 0.0) * closing_quantity / entry_quantity
+            entry_slippage = float(entry.get("slippage") or 0.0) * closing_quantity / entry_quantity
             direction = 1.0 if old_amount > 0 else -1.0
             gross_profit = (
                 float(execution["price"]) - float(entry.get("price") or old_cost)
@@ -1644,11 +1664,30 @@ class MultiAssetSimulationBroker:
                     "account_gross_profit": gross_profit,
                     "account_realized_profit": profit,
                 })
+            # Grid trades report the matched cell entry, so diagnostics follow
+            # the trade's own entry price and time rather than the account average.
+            trade_entry_price = float(trade["entry_price"])
+            trade.update(trade_diagnostics(
+                side=trade["side"],
+                entry_price=trade_entry_price,
+                quantity=closing_quantity,
+                highest_price=max(float(entry.get("high") or trade_entry_price), fill_price),
+                lowest_price=min(float(entry.get("low") or trade_entry_price), fill_price),
+                stop_loss_pct=float(entry.get("stop_loss_pct") or 0.0),
+                profit=float(trade["profit"]),
+                commission=float(trade["commission"]),
+                entry_slippage=entry_slippage,
+                exit_slippage=unit_slippage * closing_quantity,
+                entry_time=trade["entry_time"],
+                exit_time=trade["exit_time"],
+                holding_bars=int(entry.get("bars") or 0),
+            ))
             self.closed_trades.append(trade)
             remaining = max(0.0, entry_quantity - closing_quantity)
             if remaining > 1e-12 and old_amount * target_amount >= 0:
                 entry["quantity"] = remaining
                 entry["commission"] = max(0.0, float(entry.get("commission") or 0.0) - entry_fee)
+                entry["slippage"] = max(0.0, float(entry.get("slippage") or 0.0) - entry_slippage)
                 self._entries[symbol] = entry
             else:
                 self._entries.pop(symbol, None)
@@ -1656,22 +1695,37 @@ class MultiAssetSimulationBroker:
         if opening_quantity > 1e-12:
             opening_side = "long" if target_amount > 0 else "short"
             existing = self._entries.get(symbol)
+            protection = self._protections.get(symbol)
+            stop_loss_pct = float(protection.spec.stop_loss_pct) if protection is not None else 0.0
+            open_slippage = unit_slippage * opening_quantity
             if existing and existing.get("side") == opening_side:
                 previous_quantity = float(existing.get("quantity") or 0.0)
                 combined_quantity = previous_quantity + opening_quantity
                 existing["price"] = (
-                    float(existing.get("price") or execution["price"]) * previous_quantity
-                    + float(execution["price"]) * opening_quantity
+                    float(existing.get("price") or fill_price) * previous_quantity
+                    + fill_price * opening_quantity
                 ) / combined_quantity
                 existing["quantity"] = combined_quantity
                 existing["commission"] = float(existing.get("commission") or 0.0) + open_fee
+                existing["slippage"] = float(existing.get("slippage") or 0.0) + open_slippage
+                existing["high"] = max(float(existing.get("high") or fill_price), fill_price)
+                existing["low"] = min(float(existing.get("low") or fill_price), fill_price)
+                # 1R stays anchored to the first stop loss seen for this entry.
+                if not float(existing.get("stop_loss_pct") or 0.0):
+                    existing["stop_loss_pct"] = stop_loss_pct
             else:
                 self._entries[symbol] = {
                     "time": execution["time"],
-                    "price": float(execution["price"]),
+                    "symbol": str(execution["symbol"]),
+                    "price": fill_price,
                     "quantity": opening_quantity,
                     "commission": open_fee,
+                    "slippage": open_slippage,
                     "side": opening_side,
+                    "high": fill_price,
+                    "low": fill_price,
+                    "stop_loss_pct": stop_loss_pct,
+                    "bars": 0,
                 }
             self._record_grid_entry(execution, opening_quantity, open_fee)
 
@@ -2195,6 +2249,7 @@ class StrategyV2BacktestRunner:
             "annualizedVolatility": annualized_volatility,
             "periodsPerYear": periods_per_year,
             "totalCommission": sum(float(item.get("commission") or 0.0) for item in executions),
+            **summarize_trade_diagnostics(closed_trades),
             "positions": {
                 key: {
                     "amount": value.amount,

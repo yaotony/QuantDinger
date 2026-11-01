@@ -603,6 +603,13 @@ def list_jobs(
     return rows or []
 
 
+def concurrent_job_limits() -> tuple[int, int]:
+    """Return the (per-tenant, per-token) cap on queued/running agent jobs."""
+    tenant_cap = max(1, int(os.getenv("AGENT_MAX_CONCURRENT_JOBS_PER_TENANT", "4")))
+    token_cap = max(1, int(os.getenv("AGENT_MAX_CONCURRENT_JOBS_PER_TOKEN", "2")))
+    return tenant_cap, token_cap
+
+
 def count_active_jobs(*, user_id: int, agent_token_id: Optional[int] = None) -> int:
     with get_db_connection() as db:
         cur = db.cursor()

@@ -5,7 +5,6 @@ uses the same V2 execution model as the human Backtest Center.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,7 +18,9 @@ from app.utils.agent_auth import (
     SCOPE_B, agent_required, current_token, current_user_id,
     instrument_allowed, market_allowed, with_idempotency,
 )
-from app.utils.agent_jobs import _job_receipt, count_active_jobs, submit_job
+from app.utils.agent_jobs import (
+    _job_receipt, concurrent_job_limits, count_active_jobs, submit_job,
+)
 from app.utils.logger import get_logger
 from flask import request
 
@@ -260,8 +261,7 @@ def create_backtest():
             return envelope(_job_receipt(existing, duplicate=True), message="idempotent replay")
 
     token_id = int(current_token().get("id") or 0)
-    tenant_cap = max(1, int(os.getenv("AGENT_MAX_CONCURRENT_JOBS_PER_TENANT", "4")))
-    token_cap = max(1, int(os.getenv("AGENT_MAX_CONCURRENT_JOBS_PER_TOKEN", "2")))
+    tenant_cap, token_cap = concurrent_job_limits()
     if count_active_jobs(user_id=current_user_id()) >= tenant_cap:
         return error(
             429,

@@ -4,6 +4,7 @@ This guide is for external agents (OpenClaw, Claude Code, Cursor, Codex, CLI bot
 
 Related references:
 
+- [QuantDinger Agent skill](AGENT_SKILL.md): an installable `SKILL.md` that packages this loop, its safety rules, and its anti-overfitting rules for Claude Code, Codex, and OpenClaw.
 - [Agent Gateway quickstart](AGENT_QUICKSTART.md) for authentication, scopes, and idempotency.
 - [MCP setup](MCP_SETUP.md) for wiring an agent to the MCP server.
 - [agent-openapi.json](agent-openapi.json) for the machine-readable contract.
@@ -62,6 +63,8 @@ Verify the token before starting:
 curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/whoami
 ```
+
+Or check the whole environment in one call: `GET /api/agent/v1/environment` (R scope; MCP `check_environment`, which also checks connectivity and authentication). It reports the backend version, token scopes, whether the token is paper-only, the backtest concurrency limit and active job count, the range limits by market and timeframe, and token expiry. Each entry in `checks` has `status` `pass`, `warn`, or `fail` and, unless it passes, a `remediation` hint (for example, re-issue the token at `/me/tokens` when the B scope is missing); `overall` is the worst status. The report never contains the token or other secrets.
 
 ## Step 1: Read the authoring contract and templates
 
@@ -245,6 +248,30 @@ For stock markets (USStock, HKStock, AStock, or direct equities) on minute or ho
 Worked example: a `1d` strategy with `set_warmup(200)` needs `ceil(200 × 1.4 × 1.35) = 378` warmup days. On Crypto (1095-day limit) the selected range may be at most 717 days; on USStock (3650 days) at most 3272 days.
 
 Plan ranges before submitting: compute the maximum selected range from the manifest, and if the user wants a longer history, use a higher timeframe or reduce long lookbacks.
+
+### Check data coverage before submitting
+
+Instead of computing the limits by hand, ask the server. `GET /data-coverage` (R scope, no job, no billing; MCP: `get_data_coverage`) takes `market`, `symbol`, `timeframe`, optional `exchange_id`/`market_type`, and optionally the planned `start_date`, `end_date` (both or neither), and `warmup_bars` (the manifest's `warmupBars`):
+
+```bash
+curl -G -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
+  http://localhost:8888/api/agent/v1/data-coverage \
+  --data-urlencode "market=Crypto" --data-urlencode "symbol=BTC/USDT" \
+  -d timeframe=15m -d start_date=2023-01-01 -d end_date=2024-12-31 -d warmup_bars=200
+```
+
+```text
+get_data_coverage(market="Crypto", symbol="BTC/USDT", timeframe="15m",
+                  start_date="2023-01-01", end_date="2024-12-31", warmup_bars=200)
+```
+
+The response contains:
+
+- `earliest_bar`: the first available candle of the data source. `status` is `unknown` (with `time: null`) when the source cannot report it; no date is estimated. Today only Binance-routed crypto (`exchange_id=binance`) reports it.
+- `limits`: `max_days`, `warmup_days`, `max_selected_days` (the largest `endDate - startDate` once warmup is reserved), and `warmup_fits` (false when warmup alone exceeds the limit).
+- `evaluation` (only with dates): `feasible`, `range_check` (`ok` plus `violation`, which is exactly the `details` a backtest submission would return), `history_check` (`ok`, `insufficient`, or `unknown` against the earliest bar), and `recommended_start`/`recommended_end`, a pair that keeps the end date and passes both checks, or `null` when none exists.
+
+`range_check` uses the same rule as the `/backtest/run` precheck, so a range it accepts is not rejected for its length. Query once per timeframe and instrument the source declares; the strictest answer applies. Dynamic universes are still checked at run time.
 
 ## Error codes and handling
 

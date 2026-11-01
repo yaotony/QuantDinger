@@ -325,6 +325,46 @@ class DataSourceFactory:
             )
     
     @classmethod
+    def get_earliest_kline_time(
+        cls,
+        *,
+        market: str,
+        symbol: str,
+        timeframe: str,
+        exchange_id: Optional[str] = None,
+        market_type: Optional[str] = None,
+    ) -> Optional[int]:
+        """Return the first candle open time (Unix seconds), or None when unknown.
+
+        Provider failures are reported as unknown: callers must never turn a
+        failed lookup into an estimated date.
+        """
+        m = cls.normalize_market(market or "")
+        try:
+            source = cls._resolve_source(m, exchange_id=exchange_id, market_type=market_type)
+            lookup = getattr(source, "get_earliest_kline_time", None)
+            if not callable(lookup):
+                return None
+            value = lookup(symbol, timeframe)
+        except Exception as e:
+            cls._log_limited(
+                "warning",
+                f"earliest-kline:{m}:{symbol}:{type(e).__name__}",
+                "Earliest K-line lookup failed for %s:%s - %s",
+                m,
+                symbol,
+                str(e)[:160],
+            )
+            return None
+        if value is None:
+            return None
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            return None
+        return seconds if seconds > 0 else None
+
+    @classmethod
     def _resolve_source(
         cls,
         market: str,

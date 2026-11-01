@@ -5,12 +5,18 @@ from datetime import datetime, timezone
 
 from flask import jsonify
 
+from app._version import APP_VERSION
+from app.services.agent_environment import build_environment_report
 from app.utils.agent_auth import (
     SCOPE_R, agent_required, current_token, current_user_id,
 )
+from app.utils.agent_jobs import concurrent_job_limits, count_active_jobs
+from app.utils.logger import get_logger
 
 from . import agent_v1_bp
 from ._helpers import envelope
+
+logger = get_logger(__name__)
 
 
 @agent_v1_bp.route("/health", methods=["GET"])
@@ -49,3 +55,32 @@ def whoami():
         "max_order_notional": float(token.get("max_order_notional") or 1000),
         "max_daily_notional": float(token.get("max_daily_notional") or 5000),
     })
+
+
+@agent_v1_bp.route("/environment", methods=["GET"])
+@agent_required(SCOPE_R)
+def environment():
+    """Readiness report: version, scopes, paper-only mode, backtest quota and range limits.
+
+    Each check is ``pass``/``warn``/``fail`` with a remediation hint. The token
+    value, hash and id are never returned.
+    """
+    user_id = current_user_id()
+    token = current_token()
+    tenant_limit, token_limit = concurrent_job_limits()
+    try:
+        tenant_active = count_active_jobs(user_id=user_id)
+        token_active = count_active_jobs(
+            user_id=user_id, agent_token_id=int(token.get("id") or 0),
+        )
+    except Exception:
+        logger.exception("agent_v1/environment: active job count unavailable")
+        tenant_active = token_active = None
+    return envelope(build_environment_report(
+        token=token,
+        app_version=APP_VERSION,
+        tenant_limit=tenant_limit,
+        token_limit=token_limit,
+        tenant_active=tenant_active,
+        token_active=token_active,
+    ))

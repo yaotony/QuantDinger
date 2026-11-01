@@ -206,6 +206,88 @@ def test_agent_openapi_documents_backtest_source_contract():
     assert "404" in responses
 
 
+def test_agent_openapi_documents_data_coverage_contract():
+    from datetime import datetime
+
+    from app.services.data_coverage import describe_data_coverage
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    coverage =describe_data_coverage(
+        market="Crypto",
+        symbol="BTC/USDT",
+        timeframe="15m",
+        start_date=datetime(2023, 1, 1),
+        end_date=datetime(2024, 12, 31),
+        warmup_bars=200,
+        earliest_lookup=lambda **_: 1_502_928_000,
+    )
+    schema = schemas["DataCoverage"]
+    assert set(schema["properties"]) == set(coverage) == set(schema["required"])
+    for key in ("earliest_bar", "limits"):
+        assert set(schema["properties"][key]["properties"]) == set(coverage[key])
+        assert set(schema["properties"][key]["required"]) == set(coverage[key])
+
+    evaluation = coverage["evaluation"]
+    evaluation_schema = schemas["DataCoverageEvaluation"]
+    assert set(evaluation_schema["properties"]) == set(evaluation) == set(evaluation_schema["required"])
+    for key in ("range_check", "history_check"):
+        assert set(evaluation_schema["properties"][key]["properties"]) == set(evaluation[key])
+    violation = evaluation["range_check"]["violation"]
+    assert violation is not None
+    assert set(schemas["BacktestRangeLimitDetails"]["properties"]) == set(violation)
+
+    operation = spec["paths"]["/api/agent/v1/data-coverage"]["get"]
+    assert operation["x-scope-class"] == "R"
+    documented_params = {item["name"] for item in operation["parameters"]}
+    assert documented_params == {
+        "market", "symbol", "timeframe", "exchange_id", "market_type",
+        "start_date", "end_date", "warmup_bars",
+    }
+    route_source = (
+        BACKEND_ROOT / "backend_api_python" / "app" / "routes" / "agent_v1" / "markets.py"
+    ).read_text(encoding="utf-8")
+    for name in documented_params:
+        assert f'request.args.get("{name}")' in route_source, name
+
+
+def test_agent_openapi_documents_environment_contract():
+    from datetime import datetime, timezone
+
+    from app.services.agent_environment import build_environment_report
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    report = build_environment_report(
+        token={"name": "example", "scopes": "R,W,B,T", "paper_only": False,
+               "expires_at": datetime(2026, 1, 2, tzinfo=timezone.utc)},
+        app_version="test",
+        tenant_limit=4, token_limit=2, tenant_active=None, token_active=None,
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    schema = schemas["EnvironmentReport"]
+    assert set(schema["properties"]) == set(report) == set(schema["required"])
+    for key in ("token", "backtest_quota", "backtest_range_limits"):
+        assert set(schema["properties"][key]["properties"]) == set(report[key])
+        assert set(schema["properties"][key]["required"]) == set(report[key])
+
+    check_schema = schemas["EnvironmentCheck"]
+    documented_ids = set(check_schema["properties"]["id"]["enum"])
+    assert {item["id"] for item in report["checks"]} == documented_ids
+    for item in report["checks"]:
+        assert set(item) == set(check_schema["required"])
+        assert item["status"] in check_schema["properties"]["status"]["enum"]
+    limit = next(iter(report["backtest_range_limits"]["default"].values()))
+    assert set(limit) == set(schemas["BacktestRangeLimit"]["required"])
+
+    operation = spec["paths"]["/api/agent/v1/environment"]["get"]
+    assert operation["x-scope-class"] == "R"
+
+
 def test_mcp_metadata_matches_exported_tools_and_documented_routes():
     metadata_names = {tool.id.removeprefix("mcp.") for tool in MCP_AGENT_TOOLS}
     assert metadata_names == _mcp_tool_names()
