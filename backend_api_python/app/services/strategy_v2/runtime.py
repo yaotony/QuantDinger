@@ -35,7 +35,7 @@ from app.services.instrument_rules import (
 )
 from .contract import PLATFORM_MAX_LEVERAGE, CompiledStrategyV2, StrategyV2ContractError, compile_strategy_v2
 from .data import MultiAssetDataPortal
-from .frequencies import normalize_frequency, periods_per_year
+from .frequencies import frequency_seconds, normalize_frequency, periods_per_year
 from .protection import ProtectionDecision, ProtectionEngine, ProtectionSpec, ProtectionState
 from .trade_diagnostics import slippage_per_unit, summarize_trade_diagnostics, trade_diagnostics
 
@@ -722,8 +722,23 @@ class MultiAssetSimulationBroker:
         commission: float = 0.0005,
         slippage: float = 0.0005,
         instrument_rules: InstrumentRulesSnapshot | Mapping[str, InstrumentRules | Mapping[str, Any]] | None = None,
+        funding_rates: Mapping[str, Iterable[tuple[Any, float]]] | None = None,
     ) -> None:
         self.portfolio = PortfolioState(initial_capital, initial_capital, total_value=initial_capital)
+        # Funding simulation is opt-in. ``None`` keeps every result byte-for-byte
+        # identical to runs that do not model funding.
+        self.funding_enabled = funding_rates is not None
+        self._funding_rates: dict[str, list[tuple[pd.Timestamp, float]]] = {
+            str(key): sorted(
+                (_utc_naive_timestamp(time), float(rate))
+                for time, rate in (values or [])
+                if math.isfinite(float(rate))
+            )
+            for key, values in (funding_rates or {}).items()
+        }
+        self._funding_cursor: dict[str, int] = {}
+        self.funding_events: list[dict[str, Any]] = []
+        self.total_funding = 0.0
         self.leverage = max(1.0, float(leverage or 1.0))
         self.commission = max(0.0, float(commission or 0.0))
         self.slippage = max(0.0, float(slippage or 0.0))
@@ -1543,6 +1558,64 @@ class MultiAssetSimulationBroker:
             entry["high"] = max(float(entry.get("high") or entry_price), float(bar["high"]))
             entry["low"] = min(float(entry.get("low") or entry_price), float(bar["low"]))
 
+    def apply_funding(
+        self,
+        portal: MultiAssetDataPortal,
+        bar_open: Any,
+        bar_close: Any,
+    ) -> None:
+        """Settle funding for positions held through settlements in ``(bar_open, bar_close]``.
+
+        The payment is ``signed quantity * bar close * rate``: longs pay and
+        shorts receive a positive rate, and the reverse for a negative rate.
+        Settlements outside every processed bar span are never charged.
+        """
+        if not self._funding_rates:
+            return
+        window_start = _utc_naive_timestamp(bar_open)
+        window_end = _utc_naive_timestamp(bar_close)
+        for symbol, events in self._funding_rates.items():
+            cursor = self._funding_cursor.get(symbol, 0)
+            while cursor < len(events) and events[cursor][0] <= window_start:
+                cursor += 1
+            due_start = cursor
+            while cursor < len(events) and events[cursor][0] <= window_end:
+                cursor += 1
+            self._funding_cursor[symbol] = cursor
+            if cursor == due_start:
+                continue
+            holdings = [
+                (position_key, position)
+                for position_key, position in self.portfolio.positions.items()
+                if position.symbol == symbol and abs(position.amount) > 1e-12
+            ]
+            if not holdings:
+                continue
+            close = portal.close_at(symbol, bar_open)
+            for position_key, position in holdings:
+                price = float(close or position.last_price or position.avg_cost or 0.0)
+                if price <= 0 or not math.isfinite(price):
+                    continue
+                for settlement_time, rate in events[due_start:cursor]:
+                    notional = position.amount * price
+                    payment = notional * rate
+                    self.portfolio.available_cash -= payment
+                    self.total_funding += payment
+                    entry = self._entries.get(position_key)
+                    if entry is not None:
+                        entry["funding"] = float(entry.get("funding") or 0.0) + payment
+                    self.funding_events.append({
+                        "time": _backtest_time_iso(settlement_time),
+                        "barTime": _backtest_time_iso(window_start),
+                        "symbol": position_key,
+                        "side": "long" if position.amount > 0 else "short",
+                        "quantity": abs(position.amount),
+                        "price": price,
+                        "notional": abs(notional),
+                        "rate": rate,
+                        "payment": payment,
+                    })
+
     def record_equity(self, portal: MultiAssetDataPortal, timestamp: Any) -> None:
         self._track_open_entry_excursions(portal, timestamp)
         value = self.mark_to_market(portal, timestamp)
@@ -1664,6 +1737,17 @@ class MultiAssetSimulationBroker:
                     "account_gross_profit": gross_profit,
                     "account_realized_profit": profit,
                 })
+            entry_funding = 0.0
+            if self.funding_enabled:
+                # Funding accrued while the entry was open is allocated to the
+                # closed quantity pro rata, like the entry commission.
+                entry_funding = float(entry.get("funding") or 0.0) * closing_quantity / entry_quantity
+                trade["profit_before_funding"] = float(trade["profit"])
+                trade["funding_fee"] = entry_funding
+                trade["profit"] = float(trade["profit"]) - entry_funding
+                for profit_field in ("grid_matched_profit", "account_realized_profit"):
+                    if trade.get(profit_field) is not None:
+                        trade[profit_field] = float(trade[profit_field]) - entry_funding
             # Grid trades report the matched cell entry, so diagnostics follow
             # the trade's own entry price and time rather than the account average.
             trade_entry_price = float(trade["entry_price"])
@@ -1688,6 +1772,8 @@ class MultiAssetSimulationBroker:
                 entry["quantity"] = remaining
                 entry["commission"] = max(0.0, float(entry.get("commission") or 0.0) - entry_fee)
                 entry["slippage"] = max(0.0, float(entry.get("slippage") or 0.0) - entry_slippage)
+                if self.funding_enabled:
+                    entry["funding"] = float(entry.get("funding") or 0.0) - entry_funding
                 self._entries[symbol] = entry
             else:
                 self._entries.pop(symbol, None)
@@ -1831,6 +1917,7 @@ class StrategyV2BacktestRunner:
         slippage: float = 0.0005,
         universe_resolver=None,
         instrument_rules: InstrumentRulesSnapshot | Mapping[str, InstrumentRules | Mapping[str, Any]] | None = None,
+        funding_rates: Mapping[str, Iterable[tuple[Any, float]]] | None = None,
     ) -> None:
         self.program: CompiledStrategyV2 = compile_strategy_v2(code)
         requested_leverage = max(1.0, float(leverage or 1.0)) if leverage_enabled else 1.0
@@ -1850,6 +1937,11 @@ class StrategyV2BacktestRunner:
             commission=commission,
             slippage=slippage,
             instrument_rules=instrument_rules,
+            funding_rates=(
+                {self.portal.resolve_key(key): values for key, values in funding_rates.items()}
+                if funding_rates is not None
+                else None
+            ),
         )
         self.instrument_rules = instrument_rules
         runtime_params = dict(params or {})
@@ -1876,7 +1968,8 @@ class StrategyV2BacktestRunner:
 
         previous: pd.Timestamp | None = None
         pending_orders: list[OrderIntent] = []
-        for timestamp in timestamps:
+        bar_span = pd.Timedelta(seconds=frequency_seconds(self.program.manifest.driving_frequency))
+        for bar_index, timestamp in enumerate(timestamps):
             self.context.current_dt = pd.Timestamp(timestamp)
             self.context.previous_trading_date = previous
             if self.broker.bankrupt:
@@ -1921,6 +2014,13 @@ class StrategyV2BacktestRunner:
                 self.context.set_last_exit_reason(decision.symbol, decision.reason)
 
             self.portal.set_clock(timestamp, include_current=True)
+            if self.broker.funding_enabled:
+                # Settlements up to the next processed bar are charged at this
+                # bar's close, so data gaps do not silently skip funding.
+                bar_end = pd.Timestamp(timestamp) + bar_span
+                if bar_index + 1 < len(timestamps):
+                    bar_end = max(bar_end, pd.Timestamp(timestamps[bar_index + 1]))
+                self.broker.apply_funding(self.portal, timestamp, bar_end)
             if self.broker.liquidate_if_insolvent(self.portal, timestamp):
                 pending_orders = []
                 self.context.flush_orders()
@@ -2166,7 +2266,9 @@ class StrategyV2BacktestRunner:
             if isinstance(self.instrument_rules, InstrumentRulesSnapshot)
             else None
         )
+        funding_summary = self._funding_summary(closed_trades) if self.broker.funding_enabled else {}
         return {
+            **funding_summary,
             "initialCapital": initial,
             "instrumentRulesSnapshot": rules_snapshot,
             "totalReturn": total_return,
@@ -2273,6 +2375,21 @@ class StrategyV2BacktestRunner:
             "audit": self._reconcile(),
         }
 
+    def _funding_summary(self, closed_trades: list[dict[str, Any]]) -> dict[str, Any]:
+        """Funding totals; positive values are paid, negative values received."""
+        payments = [float(item.get("payment") or 0.0) for item in self.broker.funding_events]
+        closed = sum(float(item.get("funding_fee") or 0.0) for item in closed_trades)
+        total = float(self.broker.total_funding)
+        return {
+            "totalFundingFee": total,
+            "fundingFeePaid": sum(value for value in payments if value > 0),
+            "fundingFeeReceived": abs(sum(value for value in payments if value < 0)),
+            "closedTradeFundingFee": closed,
+            "openPositionFundingFee": total - closed,
+            "fundingEventCount": len(payments),
+            "fundingEvents": list(self.broker.funding_events),
+        }
+
     def _attribution(self, initial: float) -> dict[str, Any]:
         commission_by_symbol: dict[str, float] = {}
         realized_by_symbol: dict[str, float] = {}
@@ -2289,22 +2406,40 @@ class StrategyV2BacktestRunner:
             realized_by_symbol[symbol] = (
                 realized_by_symbol.get(symbol, 0.0) + float(account_profit or 0.0)
             )
+        funding_by_symbol: dict[str, float] = {}
+        for event in self.broker.funding_events:
+            symbol = str(event.get("symbol") or "")
+            funding_by_symbol[symbol] = funding_by_symbol.get(symbol, 0.0) + float(event.get("payment") or 0.0)
         rows = []
-        for symbol in sorted(set(commission_by_symbol) | set(realized_by_symbol) | set(self.broker.portfolio.positions)):
+        for symbol in sorted(
+            set(commission_by_symbol)
+            | set(realized_by_symbol)
+            | set(funding_by_symbol)
+            | set(self.broker.portfolio.positions)
+        ):
             position = self.broker.portfolio.positions.get(symbol)
             unrealized = 0.0
             if position is not None:
                 unrealized = (position.last_price - position.avg_cost) * position.amount
             realized = realized_by_symbol.get(symbol, 0.0)
             fee = commission_by_symbol.get(symbol, 0.0)
-            rows.append({
+            row = {
                 "symbol": symbol,
                 "industry": "Unclassified",
                 "realizedProfit": realized,
                 "unrealizedProfit": unrealized,
                 "commission": fee,
                 "netContribution": (realized + unrealized) / initial if initial else 0.0,
-            })
+            }
+            if self.broker.funding_enabled:
+                # Realized profit already carries closed-trade funding; funding
+                # accrued on the still-open entry is deducted here.
+                open_funding = float((self.broker._entries.get(symbol) or {}).get("funding") or 0.0)
+                row["fundingFee"] = funding_by_symbol.get(symbol, 0.0)
+                row["netContribution"] = (
+                    (realized + unrealized - open_funding) / initial if initial else 0.0
+                )
+            rows.append(row)
         statuses = {
             name: sum(
                 max(1, int(item.get("occurrenceCount") or 1))
@@ -2368,6 +2503,10 @@ class StrategyV2BacktestRunner:
             actual = float((self.broker.portfolio.positions.get(symbol) or Position(symbol)).amount)
             if abs(quantities.get(symbol, 0.0) - actual) > 1e-8:
                 position_mismatches.append(symbol)
+        funding_ledger = 0.0
+        if self.broker.funding_enabled:
+            funding_ledger = sum(float(item.get("payment") or 0.0) for item in self.broker.funding_events)
+            cash -= funding_ledger
         cash_before_liquidation_adjustment = cash
         cash += self.broker.liquidation_adjustment
         ledger_equity = cash + sum(position.market_value for position in self.broker.portfolio.positions.values())
@@ -2379,9 +2518,18 @@ class StrategyV2BacktestRunner:
             or timing_mismatches
             or position_mismatches
         ) and abs(equity_difference) <= 1e-6
+        funding_audit = (
+            {"fundingLedger": funding_ledger}
+            if self.broker.funding_enabled
+            else {}
+        )
+        scope = ["fees", "fill_prices", "fill_timing", "positions", "cash", "final_equity"]
+        if self.broker.funding_enabled:
+            scope.append("funding")
         return {
+            **funding_audit,
             "passed": passed,
-            "scope": ["fees", "fill_prices", "fill_timing", "positions", "cash", "final_equity"],
+            "scope": scope,
             "executionCount": len(self.broker.executions),
             "closedTradeCount": len(self.broker.closed_trades),
             "cashLedger": cash,

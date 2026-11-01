@@ -1567,6 +1567,20 @@ ALTER TABLE qd_fundamental_snapshots ADD COLUMN IF NOT EXISTS debt_to_equity DOU
 CREATE INDEX IF NOT EXISTS idx_fundamental_snapshots_pit
   ON qd_fundamental_snapshots (market, symbol, available_at, period_end);
 
+-- Historical perpetual-swap funding rates for backtest funding simulation.
+-- funding_time is the exchange settlement instant in UTC.
+CREATE TABLE IF NOT EXISTS qd_perpetual_funding_rates (
+    id BIGSERIAL PRIMARY KEY,
+    exchange_id VARCHAR(40) NOT NULL,
+    symbol VARCHAR(80) NOT NULL,
+    funding_time TIMESTAMP NOT NULL,
+    funding_rate DOUBLE PRECISION NOT NULL,
+    mark_price DOUBLE PRECISION,
+    source VARCHAR(80) NOT NULL DEFAULT '',
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (exchange_id, symbol, funding_time)
+);
+
 CREATE TABLE IF NOT EXISTS qd_portfolio_rebalance_plans (
     plan_id VARCHAR(36) PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,

@@ -64,7 +64,7 @@ Call `get_data_coverage(market=..., symbol=..., timeframe=..., start_date=..., e
 
 ### 5. Backtest
 
-1. Call `submit_backtest(code=..., start_date=..., end_date=..., initial_capital=..., params=..., idempotency_key=...)` on the in-sample window with exactly the saved code. Omit `commission` and `slippage` to use the backend defaults, or pass the user's rates.
+1. Call `submit_backtest(code=..., start_date=..., end_date=..., initial_capital=..., params=..., idempotency_key=...)` on the in-sample window with exactly the saved code. Omit `commission` and `slippage` to use the backend defaults, or pass the user's rates. For a perpetual swap strategy that holds across funding settlements, also pass `funding_mode="historical_rates"`.
 2. HTTP 400 `strategyV2.backtestRangeLimit` creates no job: use the `details.recommended_start`/`recommended_end` it returns. HTTP 429 means the quota is full: wait for running jobs. HTTP 402 means credits are exhausted: report it and stop.
 3. Call `wait_for_job(job_id=...)`, or `stream_job_until_done(job_id=...)` for progress. A client timeout is not a failure: check `get_job(job_id=...)` or `list_jobs(kind="backtest")` before resubmitting anything.
 4. On `failed`, read the code at the start of `error` (or `error.code`) and handle it with the [error table](../../AGENT_STRATEGY_ITERATION.md#error-codes-and-handling).
@@ -83,7 +83,8 @@ Explain why the strategy made or lost money, from the result fields, before chan
 | How much do costs eat? | `totalCommission` versus `grossProfit - grossLoss`; `executionAssumptions.commission` and `slippage`. Slippage is applied to fill prices, so it also shows up as lower trade profit |
 | What is the risk? | `maxDrawdown`, `maxDrawdownDurationDays`, `sharpeRatio`, `profitFactor`, `equityCurve` shape |
 | Does it beat holding? | `totalReturn` (percent) versus `benchmarkTotalReturn`, `excessReturn` |
-| What did the engine assume? | `executionAssumptions` (fill rule, `fundingMode`: Crypto funding is not modeled), `manifest` |
+| What did the engine assume? | `executionAssumptions` (fill rule, `fundingMode`: `not_modeled` by default; `historical_rates` when you passed `funding_mode="historical_rates"` for a Binance USDⓈ-M swap), `manifest` |
+| Does funding change the picture? | With `historical_rates`: `totalFundingFee` (positive = paid), `closedTrades[].funding_fee`, and `funding.missingPeriods`/`funding.warnings`; missing settlements count as zero |
 
 Zero executions are often a valid outcome: read `orderLedger` and `diagnostics.symbolsSkipped` before touching the logic.
 

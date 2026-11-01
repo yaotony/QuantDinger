@@ -997,6 +997,7 @@ def submit_backtest(
     idempotency_key: str = "",
     source_id: int | None = None,
     source_version: int | None = None,
+    funding_mode: str | None = None,
 ) -> Any:
     """Submit a Strategy API V2 backtest; its manifest owns market data scope.
 
@@ -1007,6 +1008,11 @@ def submit_backtest(
 
     Omit ``commission`` and ``slippage`` to use the backend defaults (the same
     cost assumptions as the Backtest Center); pass explicit rates to override.
+
+    ``funding_mode`` is omitted by default (funding not modeled). Pass
+    ``"historical_rates"`` to charge Binance USD-M perpetual funding on open
+    swap positions; the result then reports funding per trade, in the summary,
+    and lists missing funding periods under ``funding``.
 
     A range that exceeds the market/timeframe limit (warmup included) is
     rejected before a job is created: the gateway's 400 body, whose
@@ -1039,6 +1045,11 @@ def submit_backtest(
         payload["commission"] = commission
     if slippage is not None:
         payload["slippage"] = slippage
+    if funding_mode:
+        mode = str(funding_mode).strip().lower()
+        if mode not in {"not_modeled", "historical_rates"}:
+            raise ValueError("funding_mode must be 'not_modeled' or 'historical_rates'")
+        payload["fundingMode"] = mode
     headers = _idempotency_headers(idempotency_key)
     return _post("/api/agent/v1/backtest/run", json=payload, headers=headers)
 

@@ -393,7 +393,10 @@ def compact_backtest_result(result: dict[str, Any]) -> dict[str, Any]:
         ("orderLedger", 1500),
     ):
         compact[field] = _sample_evenly(result.get(field), limit)
-    snapshots = result.get("reviewCandles") if isinstance(result.get("reviewCandles"), dict) else {}
+    if "fundingEvents" in result:
+        # Only present when funding is modeled; totals live in summary fields.
+        compact["fundingEvents"] = _sample_evenly(result.get("fundingEvents"), 1500)
+    snapshots =result.get("reviewCandles") if isinstance(result.get("reviewCandles"), dict) else {}
     compact["reviewCandles"] = {
         str(symbol): {
             "timeframe": str((snapshot or {}).get("timeframe") or ""),

@@ -174,13 +174,13 @@ def submission(monkeypatch):
     agent_auth._rate_state.clear()
 
 
-def _post(client, monkeypatch, manifest: StrategyManifest, start: str, end: str):
+def _post(client, monkeypatch, manifest: StrategyManifest, start: str, end: str, **extra):
     monkeypatch.setattr(
         strategy_v2_pkg, "compile_strategy_v2", lambda _code: SimpleNamespace(manifest=manifest),
     )
     return client.post(
         "/api/agent/v1/backtest/run",
-        json={"code": "compiled-by-fixture", "startDate": start, "endDate": end},
+        json={"code": "compiled-by-fixture", "startDate": start, "endDate": end, **extra},
         headers={"Authorization": "Bearer qd_agent_RANGETEST12345", "Idempotency-Key": "range-test"},
     )
 
@@ -218,6 +218,29 @@ def test_submit_inside_limit_is_queued(client, submission, monkeypatch):
 
     assert response.status_code == 202
     submission.assert_called_once()
+
+
+def test_submit_forwards_historical_funding_mode(client, submission, monkeypatch):
+    response = _post(
+        client, monkeypatch, _manifest("15m", warmup=96), "2024-01-01", "2024-06-30",
+        fundingMode="historical_rates",
+    )
+
+    assert response.status_code == 202
+    assert submission.call_args.kwargs["request_payload"]["fundingMode"] == "historical_rates"
+
+
+def test_submit_rejects_unknown_funding_mode(client, submission, monkeypatch):
+    response = _post(
+        client, monkeypatch, _manifest("15m", warmup=96), "2024-01-01", "2024-06-30",
+        fundingMode="fixed",
+    )
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["message"] == "strategyV2.fundingModeUnsupported:fixed"
+    assert body["details"]["allowed"] == ["not_modeled", "historical_rates"]
+    submission.assert_not_called()
 
 
 def _range_exception() -> BacktestRangeLimitError:

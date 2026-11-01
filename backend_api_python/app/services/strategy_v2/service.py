@@ -24,6 +24,7 @@ from app.services.backtest_limits import (
     validate_backtest_range,
 )
 from app.services.fundamental_data import get_fundamental_data_service
+from app.services.funding_rates import get_funding_rate_history_service
 from app.services.instrument_rules import InstrumentRulesProvider, get_instrument_rules_provider
 from app.services.market.instrument_products import PRODUCT_CRYPTO
 from app.services.market.product_catalog import get_catalog_product
@@ -33,6 +34,13 @@ from app.utils.logger import get_logger
 from .contract import StrategyV2ContractError, compile_strategy_v2
 from .factor_research import FactorResearchEngine
 from .frequencies import SUPPORTED_SUBSCRIPTION_FREQUENCIES, normalize_frequency, periods_per_year
+from .funding import (
+    FUNDING_MODE_HISTORICAL,
+    FUNDING_MODE_NOT_MODELED,
+    FUNDING_PRICE_BASIS,
+    build_funding_plan,
+    normalize_funding_mode,
+)
 from .instruments import instrument_key_from_metadata
 from .models import InstrumentSpec, StrategyManifest
 from .market_data import load_strategy_frame
@@ -78,6 +86,7 @@ class StrategyV2BacktestService:
         data_source: str = "system_market_data_router",
         snapshot_store: MarketDataSnapshotStore | None = None,
         instrument_rules_provider: InstrumentRulesProvider | None = None,
+        funding_rate_provider: Any | None = None,
     ) -> None:
         self.repository = repository or StrategyBacktestRepository()
         self.universe_service = universe_service or get_universe_service()
@@ -87,6 +96,13 @@ class StrategyV2BacktestService:
         self.data_source = str(data_source or "system_market_data_router")
         self.snapshot_store = snapshot_store or MarketDataSnapshotStore()
         self.instrument_rules_provider = instrument_rules_provider or get_instrument_rules_provider()
+        self._funding_rate_provider = funding_rate_provider
+
+    @property
+    def funding_rate_provider(self) -> Any:
+        if self._funding_rate_provider is None:
+            self._funding_rate_provider = get_funding_rate_history_service()
+        return self._funding_rate_provider
 
     def compile(self, code: str) -> dict[str, Any]:
         return compile_strategy_v2(code).manifest.metadata()
@@ -314,6 +330,7 @@ class StrategyV2BacktestService:
         instrument_rules_snapshot_id: str = "",
         analysis_only: bool = False,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
+        funding_mode: str = FUNDING_MODE_NOT_MODELED,
     ) -> tuple[int | None, dict[str, Any]]:
         started_at = perf_counter()
 
@@ -322,6 +339,7 @@ class StrategyV2BacktestService:
                 on_progress({"phase": phase, "percent": percent, **details})
 
         emit("preparing", 5)
+        funding_mode = normalize_funding_mode(funding_mode)
         program = compile_strategy_v2(code)
         manifest = program.manifest
         if end_date <= start_date:
@@ -461,6 +479,17 @@ class StrategyV2BacktestService:
                 persist=self.data_kind == "market" and persist,
             )
 
+        funding_plan = None
+        if funding_mode == FUNDING_MODE_HISTORICAL:
+            emit("loading_funding_rates", 48)
+            funding_plan = build_funding_plan(
+                candidates,
+                frame_keys=frames.keys(),
+                start=start_date,
+                end=end_date,
+                provider=self.funding_rate_provider,
+            )
+
         replay_at = perf_counter()
         emit("running_simulation", 52, bars=sum(len(frame.index) for frame in frames.values()))
         runner = StrategyV2BacktestRunner(
@@ -475,8 +504,11 @@ class StrategyV2BacktestService:
             slippage=slippage,
             universe_resolver=resolve_universe,
             instrument_rules=rules_snapshot,
+            funding_rates=funding_plan.rates if funding_plan is not None else None,
         )
         result = runner.run(start_date=start_date, end_date=end_date)
+        if funding_plan is not None:
+            result["funding"] = funding_plan.report(funding_mode)
         report_at = perf_counter()
         emit(
             "building_report",
@@ -617,7 +649,15 @@ class StrategyV2BacktestService:
             "slippage": float(slippage),
             "cryptoRebalanceToleranceQuote": 10.0,
             "subLotClosePolicy": "reconcile_up_to_10_quote_with_cash_and_fees",
-            "fundingMode": "not_modeled",
+            "fundingMode": funding_mode,
+            **(
+                {
+                    "fundingPriceBasis": FUNDING_PRICE_BASIS,
+                    "fundingMissingDataPolicy": "zero_rate",
+                }
+                if funding_mode == FUNDING_MODE_HISTORICAL
+                else {}
+            ),
             "exchangeEquityProducts": instrument_products,
             "corporateActionsMode": (
                 "underlying_us_equity_series"
