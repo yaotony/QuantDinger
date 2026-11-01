@@ -369,6 +369,22 @@ def test_compile_strategy_code_forwards_idempotency_key(monkeypatch, fresh_modul
     assert captured["headers"] == {"Idempotency-Key": "compile-1"}
 
 
+def test_compile_strategy_code_is_read_only_and_needs_no_idempotency_key(monkeypatch, fresh_module):
+    from quantdinger_mcp.tool_contract import WRITE_TOOLS
+
+    captured = {}
+
+    def fake_post(path, json=None, headers=None):
+        captured.update(path=path, json=json, headers=headers)
+        return {"manifest": {"strategyType": "cta"}}
+
+    monkeypatch.setattr(fresh_module, "_post", fake_post)
+    fresh_module.compile_strategy_code(code="def initialize(context):\n    pass\n")
+
+    assert "compile_strategy_code" not in WRITE_TOOLS
+    assert not captured["headers"]
+
+
 def test_strategy_source_workspace_payloads(monkeypatch, fresh_module):
     calls = []
 

@@ -694,7 +694,12 @@ def compile_strategy_code(
     source_id: int | None = None,
     idempotency_key: str = "",
 ) -> Any:
-    """Compile Strategy API V2 code and return its canonical manifest without saving."""
+    """Compile Strategy API V2 code and return its canonical manifest without saving.
+
+    Requires only R scope: compilation never persists anything. It is subject
+    to a dedicated per-token/per-tenant compile quota (HTTP 429 when exceeded).
+    `idempotency_key` is optional and kept for backward compatibility.
+    """
     payload: dict[str, Any] = {}
     if code is not None:
         assert_code_size(code, label="Strategy code")
@@ -703,10 +708,11 @@ def compile_strategy_code(
         payload["source_id"] = int(source_id)
     if not payload:
         raise ValueError("code or source_id is required")
+    key = str(idempotency_key or "").strip()
     return _post(
         "/api/agent/v1/strategy-sources/compile",
         json=payload,
-        headers=_idempotency_headers(idempotency_key),
+        headers=_idempotency_headers(key) if key else None,
     )
 
 
