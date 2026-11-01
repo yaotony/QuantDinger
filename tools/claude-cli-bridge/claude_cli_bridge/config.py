@@ -26,6 +26,10 @@ class BridgeConfig:
     models: tuple[str, ...] = ("sonnet", "opus", "haiku")
     allow_claude_model_ids: bool = True
     unknown_model: str = "error"
+    max_concurrency: int = 2
+    overflow: str = "queue"
+    queue_timeout_seconds: float = 60.0
+    request_timeout_seconds: float = 300.0
     workdir: str = ""
     max_body_bytes: int = 10 * 1024 * 1024
 
@@ -34,6 +38,12 @@ class BridgeConfig:
             raise ConfigError("api_key must be set to a random value of at least 16 characters")
         if not 0 <= self.port <= 65535:
             raise ConfigError("port must be between 0 and 65535")
+        if self.max_concurrency < 1:
+            raise ConfigError("max_concurrency must be at least 1")
+        if self.overflow not in {"queue", "reject"}:
+            raise ConfigError("overflow must be 'queue' or 'reject'")
+        if self.queue_timeout_seconds < 0 or self.request_timeout_seconds <= 0:
+            raise ConfigError("timeouts must be positive")
         if not self.models:
             raise ConfigError("models must list at least one model alias")
         if self.unknown_model not in {"error", "default"}:

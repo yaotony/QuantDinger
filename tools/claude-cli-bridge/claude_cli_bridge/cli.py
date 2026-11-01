@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,9 +80,72 @@ def model_from(payload: dict[str, Any], fallback: str) -> str:
     return fallback
 
 
+_NOT_AUTHENTICATED = (
+    "not logged in",
+    "please run /login",
+    "/login",
+    "invalid api key",
+    "oauth token",
+    "authentication_error",
+    "credit balance",
+)
+_USAGE_LIMIT = ("usage limit", "limit reached", "rate limit", "rate_limit", "too many requests")
+_OVERLOADED = ("overloaded", "529")
+
+
 def cli_failure(message: str, stderr: str = "") -> BridgeError:
+    """Translate a failed CLI turn into a specific OpenAI-shaped error."""
     detail = (message or "").strip() or (stderr or "").strip() or "Claude CLI failed."
-    return BridgeError(detail[:2000], status=502, error_type="api_error", code="cli_error")
+    detail = detail[:2000]
+    haystack = f"{message}\n{stderr}".lower()
+    if "unrecognized_model" in haystack or "model not found" in haystack:
+        return BridgeError(
+            f"The Claude CLI does not recognise this model: {detail}",
+            status=404,
+            error_type="invalid_request_error",
+            code="model_not_found",
+        )
+    if any(marker in haystack for marker in _NOT_AUTHENTICATED):
+        return BridgeError(
+            f"The Claude CLI on the bridge host is not logged in or its login expired. "
+            f"Run `claude` on that machine and log in again. Detail: {detail}",
+            status=503,
+            error_type="api_error",
+            code="cli_not_authenticated",
+        )
+    if any(marker in haystack for marker in _USAGE_LIMIT):
+        return BridgeError(
+            f"The Claude subscription usage limit was reached. Detail: {detail}",
+            status=429,
+            error_type="rate_limit_error",
+            code="cli_usage_limit",
+        )
+    if any(marker in haystack for marker in _OVERLOADED):
+        return BridgeError(
+            f"Claude is temporarily overloaded. Detail: {detail}",
+            status=503,
+            error_type="api_error",
+            code="upstream_overloaded",
+        )
+    return BridgeError(detail, status=502, error_type="api_error", code="cli_error")
+
+
+def cli_timeout(seconds: float) -> BridgeError:
+    return BridgeError(
+        f"The Claude CLI did not finish within {seconds:g} seconds.",
+        status=504,
+        error_type="api_error",
+        code="cli_timeout",
+    )
+
+
+def cli_not_found(path: str) -> BridgeError:
+    return BridgeError(
+        f"Claude CLI not found at {path!r}.",
+        status=503,
+        error_type="api_error",
+        code="cli_not_found",
+    )
 
 
 def run_once(
@@ -93,21 +157,26 @@ def run_once(
 ) -> CliResult:
     command = build_command(config, model=model, system_prompt=system_prompt)
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             command,
-            input=prompt,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             cwd=isolated_workdir(config),
-            check=False,
+            start_new_session=True,
         )
     except FileNotFoundError as exc:
-        raise BridgeError(
-            f"Claude CLI not found at {config.claude_path!r}.",
-            status=503,
-            error_type="api_error",
-            code="cli_not_found",
-        ) from exc
+        raise cli_not_found(config.claude_path) from exc
+    try:
+        stdout, stderr = proc.communicate(prompt, timeout=config.request_timeout_seconds)
+    except subprocess.TimeoutExpired:
+        terminate(proc)
+        raise cli_timeout(config.request_timeout_seconds) from None
+    except BaseException:
+        terminate(proc)
+        raise
+    completed = subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
     try:
         payload = json.loads(completed.stdout)
     except (json.JSONDecodeError, TypeError):
@@ -151,12 +220,12 @@ class CliStream:
                 start_new_session=True,
             )
         except FileNotFoundError as exc:
-            raise BridgeError(
-                f"Claude CLI not found at {config.claude_path!r}.",
-                status=503,
-                error_type="api_error",
-                code="cli_not_found",
-            ) from exc
+            raise cli_not_found(config.claude_path) from exc
+        self.timed_out = False
+        self._timeout = config.request_timeout_seconds
+        self._watchdog = threading.Timer(self._timeout, self._expire)
+        self._watchdog.daemon = True
+        self._watchdog.start()
         assert self._proc.stdin is not None
         try:
             self._proc.stdin.write(prompt)
@@ -190,7 +259,10 @@ class CliStream:
             elif kind == "result":
                 final = event
         returncode = self._proc.wait()
+        self._watchdog.cancel()
         stderr = self._proc.stderr.read() if self._proc.stderr else ""
+        if self.timed_out:
+            raise cli_timeout(self._timeout)
         if final is None or final.get("is_error") or returncode != 0:
             message = (final or {}).get("result") or ""
             raise cli_failure(str(message), stderr)
@@ -200,7 +272,12 @@ class CliStream:
             usage=usage_from(final),
         )
 
+    def _expire(self) -> None:
+        self.timed_out = True
+        terminate(self._proc)
+
     def close(self) -> None:
+        self._watchdog.cancel()
         terminate(self._proc)
 
 

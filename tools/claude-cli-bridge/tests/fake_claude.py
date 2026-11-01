@@ -52,6 +52,10 @@ def main() -> int:
         message = os.environ.get("FAKE_CLAUDE_ERROR", "API Error: something failed")
         print(json.dumps(result_payload(message, model, is_error=True)))
         return 1
+    if scenario == "stderr_error":
+        print(os.environ.get("FAKE_CLAUDE_STDERR", "boom"), file=sys.stderr)
+        print(json.dumps(result_payload("", model, is_error=True)))
+        return 1
     if scenario == "garbage":
         print("not json at all")
         return 0
