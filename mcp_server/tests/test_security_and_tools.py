@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 62
+    assert len(fresh_module.MCP_TOOL_NAMES) == 65
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
@@ -593,6 +593,114 @@ def test_backtest_history_tools_are_read_only_gateway_reads(monkeypatch, fresh_m
     assert calls[2] == ("/api/agent/v1/backtest/runs/41", None)
     assert "list_backtest_runs" not in WRITE_TOOLS
     assert "get_backtest_run" not in WRITE_TOOLS
+
+
+def _capture_optimization_post(monkeypatch, fresh_module) -> dict:
+    captured: dict = {}
+
+    def fake_post(path, json=None, headers=None):
+        captured.update(path=path, json=json, headers=headers)
+        return {"job_id": "job-opt", "mode": "sweep"}
+
+    monkeypatch.setattr(fresh_module, "_post", fake_post)
+    return captured
+
+
+def test_submit_parameter_sweep_payload(monkeypatch, fresh_module):
+    captured = _capture_optimization_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_parameter_sweep(
+        source_id=11,
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        idempotency_key="sweep-1",
+        parameter_space=[{"name": "fast", "min": 5, "max": 20, "step": 5}],
+        max_combinations=20,
+        out_of_sample_ratio=0.25,
+    )
+
+    assert captured["path"] == "/api/agent/v1/optimization/sweep"
+    assert captured["headers"] == {"Idempotency-Key": "sweep-1"}
+    assert captured["json"]["sourceId"] == 11
+    assert captured["json"]["parameterSpace"][0]["name"] == "fast"
+    assert captured["json"]["maxCombinations"] == 20
+    assert captured["json"]["outOfSampleRatio"] == 0.25
+    assert "commission" not in captured["json"]
+    assert "folds" not in captured["json"]
+
+
+def test_submit_walk_forward_payload(monkeypatch, fresh_module):
+    captured = _capture_optimization_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_walk_forward(
+        source_id=11,
+        source_version=2,
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        idempotency_key="wf-1",
+        folds=5,
+        holdout_ratio=0.2,
+        objective="totalReturn",
+    )
+
+    assert captured["path"] == "/api/agent/v1/optimization/walk-forward"
+    assert captured["json"]["sourceVersion"] == 2
+    assert captured["json"]["folds"] == 5
+    assert captured["json"]["holdoutRatio"] == 0.2
+    assert captured["json"]["objective"] == "totalReturn"
+    assert "outOfSampleRatio" not in captured["json"]
+
+
+@pytest.mark.parametrize(("tool", "kwargs", "match"), [
+    ("submit_parameter_sweep", {"idempotency_key": ""}, "idempotency_key is required"),
+    ("submit_walk_forward", {"idempotency_key": ""}, "idempotency_key is required"),
+    ("submit_parameter_sweep", {"idempotency_key": "x", "source_id": 0}, "positive integer"),
+    ("submit_walk_forward", {"idempotency_key": "x", "parameter_space": {"fast": 1}}, "list of objects"),
+    ("submit_parameter_sweep", {"idempotency_key": "x", "max_combinations": 0}, "positive integer"),
+])
+def test_optimization_tools_reject_unsafe_input_locally(monkeypatch, fresh_module, tool, kwargs, match):
+    captured = _capture_optimization_post(monkeypatch, fresh_module)
+    arguments = {"source_id": 11, "start_date": "2024-01-01", "end_date": "2024-12-31", **kwargs}
+
+    with pytest.raises(ValueError, match=match):
+        getattr(fresh_module, tool)(**arguments)
+    assert captured == {}
+
+
+def test_optimization_limit_errors_are_protocol_errors(monkeypatch, fresh_module):
+    from mcp.types import CallToolResult
+
+    body = {
+        "code": 429,
+        "message": "Optimization daily limit reached",
+        "details": {"error_type": "OPTIMIZATION_DAILY_LIMIT", "limit": 20, "used": 20},
+        "retriable": False,
+        "data": None,
+    }
+    with httpx.Client(base_url="http://fixture.test", transport=httpx.MockTransport(
+        lambda _: httpx.Response(429, json=body)
+    )) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        result = asyncio.run(fresh_module.mcp.call_tool("submit_parameter_sweep", {
+            "source_id": 11, "start_date": "2024-01-01", "end_date": "2024-12-31", "idempotency_key": "x",
+        }))
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
+    assert "OPTIMIZATION_DAILY_LIMIT" in result.content[0].text
+
+
+def test_optimization_parameter_space_is_read_only(monkeypatch, fresh_module):
+    from quantdinger_mcp.tool_contract import WRITE_TOOLS
+
+    calls = []
+    monkeypatch.setattr(fresh_module, "_get", lambda path, params=None: calls.append((path, params)) or {})
+
+    fresh_module.get_optimization_parameter_space(11, source_version=3)
+
+    assert calls == [("/api/agent/v1/optimization/parameter-space", {"sourceId": 11, "sourceVersion": 3})]
+    assert "get_optimization_parameter_space" not in WRITE_TOOLS
+    assert WRITE_TOOLS["submit_parameter_sweep"] is False
+    assert WRITE_TOOLS["submit_walk_forward"] is False
 
 
 def test_get_backtest_run_not_found_is_protocol_error(monkeypatch, fresh_module):

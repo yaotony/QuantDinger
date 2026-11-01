@@ -101,7 +101,7 @@ Zero executions are often a valid outcome: read `orderLedger` and `diagnostics.s
 ## Overfitting rules
 
 - **No parameter sweeps aimed at a return target.** Choose values from the hypothesis and market reasoning, not from a grid search over backtests.
-- **Tuning requires out-of-sample evidence.** When you change a parameter, confirm the choice on the untouched out-of-sample window (or a walk-forward sequence of non-overlapping windows). When the Gateway exposes a dedicated walk-forward or out-of-sample tool, use it instead of manual windows.
+- **Tuning requires out-of-sample evidence.** When you change a parameter, confirm the choice on the untouched out-of-sample window. To compare several values, use `submit_walk_forward` (or `submit_parameter_sweep`) on the saved source instead of manual windows: read `get_optimization_parameter_space` first, keep the ranges small, and judge the result by `bestParamsOutOfSample` (`passed`, `degradation`) and the per-fold `outOfSample` metrics, never by `inSample` alone.
 - **Prefer stable regions.** A parameter is credible when neighbouring values give similar results; a lone spike is noise.
 - **Fewer parameters, longer samples.** Every added rule or parameter needs a stated reason.
 - **Count your tries.** Report how many variants you backtested; the best of many is weaker evidence than the only one.
@@ -146,4 +146,7 @@ When MCP is not connected, call the Agent Gateway with `Authorization: Bearer $Q
 | `list_jobs()` | `GET /jobs` | R |
 | `list_backtest_runs()` | `GET /backtest/runs` | R |
 | `get_backtest_run()` | `GET /backtest/runs/{run_id}` | R |
+| `get_optimization_parameter_space()` | `GET /optimization/parameter-space` | R |
+| `submit_parameter_sweep()` | `POST /optimization/sweep` | B |
+| `submit_walk_forward()` | `POST /optimization/walk-forward` | B |
 | `create_strategy()` | `POST /strategies` | W |

@@ -206,6 +206,53 @@ def test_agent_openapi_documents_backtest_source_contract():
     assert "404" in responses
 
 
+def test_agent_openapi_documents_optimization_contract():
+    from app.routes.agent_v1 import optimizations
+    from app.services.strategy_evolution import agent_optimization
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    requests = {
+        "sweep": schemas["OptimizationSweepRequest"],
+        "walkForward": schemas["OptimizationWalkForwardRequest"],
+    }
+    for mode, schema in requests.items():
+        assert set(schema["properties"]) == optimizations.REQUEST_FIELDS[mode], mode
+        assert "sourceId" in schema["required"]
+        assert set(schema["properties"]["objective"]["enum"]) == set(agent_optimization.OBJECTIVES)
+
+    limits = agent_optimization.OptimizationLimits(1, 1, 1).public()
+    assert set(schemas["OptimizationLimits"]["properties"]) == set(limits)
+    assert set(schemas["OptimizationLimits"]["required"]) == set(limits)
+    metrics = agent_optimization.public_metrics({})
+    assert set(schemas["OptimizationMetrics"]["properties"]) == set(metrics)
+    assert set(schemas["OptimizationMetrics"]["required"]) == set(metrics)
+    assert set(schemas["OptimizationResult"]["properties"]["mode"]["enum"]) == set(agent_optimization.MODES)
+    assert optimizations.OPTIMIZATION_JOB_KIND in schemas["Job"]["properties"]["kind"]["enum"]
+
+    for path in ("/api/agent/v1/optimization/sweep", "/api/agent/v1/optimization/walk-forward"):
+        operation = spec["paths"][path]["post"]
+        assert operation["x-scope-class"] == "B"
+        assert any(
+            item["name"] == "Idempotency-Key" and item["required"] for item in operation["parameters"]
+        )
+        responses = operation["responses"]
+        assert {"202", "400", "429"} <= set(responses)
+        assert "#/components/schemas/OptimizationLimitDetails" in json.dumps(responses["400"])
+        assert "#/components/schemas/OptimizationLimitDetails" in json.dumps(responses["429"])
+    route_source = (
+        BACKEND_ROOT / "backend_api_python" / "app" / "routes" / "agent_v1" / "optimizations.py"
+    ).read_text(encoding="utf-8")
+    documented_types = set(schemas["OptimizationLimitDetails"]["properties"]["error_type"]["enum"])
+    service_source = (
+        BACKEND_ROOT / "backend_api_python" / "app" / "services" / "strategy_evolution" / "agent_optimization.py"
+    ).read_text(encoding="utf-8")
+    raised_types = set(re.findall(r'"([A-Z]+(?:_[A-Z]+)*_LIMIT)"', route_source + service_source))
+    assert raised_types == documented_types
+
+
 def test_agent_openapi_documents_data_coverage_contract():
     from datetime import datetime
 

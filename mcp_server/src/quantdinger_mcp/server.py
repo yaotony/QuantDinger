@@ -68,6 +68,9 @@ MCP_TOOL_NAMES = (
     "submit_backtest",
     "list_backtest_runs",
     "get_backtest_run",
+    "get_optimization_parameter_space",
+    "submit_parameter_sweep",
+    "submit_walk_forward",
     "list_portfolio_positions",
     "list_paper_orders",
     "cancel_open_paper_orders",
@@ -281,6 +284,10 @@ mcp = FastMCP(
         "source_version; latest when omitted) so iterations need not resend code. "
         "Compare iterations with list_backtest_runs (summary metrics) and "
         "get_backtest_run (full result). "
+        "To optimize parameters of a saved source, read "
+        "get_optimization_parameter_space, then submit_parameter_sweep or "
+        "submit_walk_forward instead of looping single backtests; results "
+        "separate in-sample selection from out-of-sample validation. "
         "Long jobs: use wait_for_job or stream_job_until_done (bounded). "
         "Never pass natural language to backtest `code`."
     ),
@@ -1079,6 +1086,153 @@ def list_backtest_runs(
 def get_backtest_run(run_id: int) -> Any:
     """Read one backtest run's summary, manifest, and full stored result."""
     return _get(f"/api/agent/v1/backtest/runs/{int(run_id)}")
+
+
+@_tool
+def get_optimization_parameter_space(source_id: int, source_version: int | None = None) -> Any:
+    """Read a saved source's declared optimizable parameters and the optimization limits.
+
+    Every ``parameter_space`` entry passed to ``submit_parameter_sweep`` or
+    ``submit_walk_forward`` must stay inside these declared ranges.
+    ``limits`` reports the combination, concurrency, and daily caps.
+    """
+    params: dict[str, Any] = {"sourceId": _positive_int_arg("source_id", source_id)}
+    if source_version is not None:
+        params["sourceVersion"] = _positive_int_arg("source_version", source_version)
+    return _get("/api/agent/v1/optimization/parameter-space", params=params)
+
+
+def _optimization_payload(
+    *,
+    source_id: int,
+    source_version: int | None,
+    start_date: str,
+    end_date: str,
+    parameter_space: list | None,
+    max_combinations: int | None,
+    objective: str,
+    seed: int | None,
+    embargo_bars: int | None,
+    initial_capital: float,
+    commission: float | None,
+    slippage: float | None,
+    leverage_enabled: bool,
+    leverage: float,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "sourceId": _positive_int_arg("source_id", source_id),
+        "startDate": start_date,
+        "endDate": end_date,
+        "initialCapital": initial_capital,
+        "leverageEnabled": bool(leverage_enabled),
+        "leverage": leverage,
+        "objective": objective,
+    }
+    if source_version is not None:
+        payload["sourceVersion"] = _positive_int_arg("source_version", source_version)
+    if parameter_space is not None:
+        if not isinstance(parameter_space, list) or not all(isinstance(item, dict) for item in parameter_space):
+            raise ValueError("parameter_space must be a list of objects")
+        payload["parameterSpace"] = parameter_space
+    if max_combinations is not None:
+        payload["maxCombinations"] = _positive_int_arg("max_combinations", max_combinations)
+    for key, value in (("seed", seed), ("embargoBars", embargo_bars)):
+        if value is not None:
+            payload[key] = int(value)
+    # Cost fields are only sent when set so the backend owns the defaults.
+    if commission is not None:
+        payload["commission"] = commission
+    if slippage is not None:
+        payload["slippage"] = slippage
+    return payload
+
+
+@_tool
+def submit_parameter_sweep(
+    source_id: int,
+    start_date: str,
+    end_date: str,
+    idempotency_key: str = "",
+    source_version: int | None = None,
+    parameter_space: list | None = None,
+    max_combinations: int | None = None,
+    objective: str = "sharpeRatio",
+    out_of_sample_ratio: float | None = None,
+    embargo_bars: int | None = None,
+    seed: int | None = None,
+    initial_capital: float = 10000,
+    commission: float | None = None,
+    slippage: float | None = None,
+    leverage_enabled: bool = False,
+    leverage: float = 1.0,
+) -> Any:
+    """Queue a parameter sweep on a saved strategy source (async job).
+
+    Every combination is backtested on the in-sample window only; the best
+    in-sample combination then runs once on the trailing out-of-sample window
+    (``out_of_sample_ratio`` of the bars). ``parameter_space`` narrows declared
+    ranges (``[{"name", "min", "max", "step"}]``); omit it to use the full
+    declaration. Poll the returned job with ``wait_for_job``: ``result`` lists
+    ``inSample`` and ``outOfSample`` metrics separately and
+    ``bestParamsOutOfSample``; ``result.history`` has backtest-history run ids.
+    Combination (400), concurrency and daily (429) limit errors are returned
+    verbatim with ``details.error_type``.
+    """
+    payload = _optimization_payload(
+        source_id=source_id, source_version=source_version, start_date=start_date,
+        end_date=end_date, parameter_space=parameter_space, max_combinations=max_combinations,
+        objective=objective, seed=seed, embargo_bars=embargo_bars,
+        initial_capital=initial_capital, commission=commission, slippage=slippage,
+        leverage_enabled=leverage_enabled, leverage=leverage,
+    )
+    if out_of_sample_ratio is not None:
+        payload["outOfSampleRatio"] = out_of_sample_ratio
+    headers = _idempotency_headers(idempotency_key)
+    return _post("/api/agent/v1/optimization/sweep", json=payload, headers=headers)
+
+
+@_tool
+def submit_walk_forward(
+    source_id: int,
+    start_date: str,
+    end_date: str,
+    idempotency_key: str = "",
+    source_version: int | None = None,
+    parameter_space: list | None = None,
+    max_combinations: int | None = None,
+    objective: str = "sharpeRatio",
+    folds: int | None = None,
+    train_ratio: float | None = None,
+    holdout_ratio: float | None = None,
+    embargo_bars: int | None = None,
+    seed: int | None = None,
+    initial_capital: float = 10000,
+    commission: float | None = None,
+    slippage: float | None = None,
+    leverage_enabled: bool = False,
+    leverage: float = 1.0,
+) -> Any:
+    """Queue an anchored walk-forward study on a saved strategy source (async job).
+
+    Per fold, the combination with the best training (in-sample) objective is
+    validated on the following window (out of sample). The final
+    ``bestParams`` are chosen on the development window and validated once on
+    a trailing holdout (``holdout_ratio``) that no selection step saw, reported
+    as ``bestParamsOutOfSample``. Same limits and error shapes as
+    ``submit_parameter_sweep``.
+    """
+    payload = _optimization_payload(
+        source_id=source_id, source_version=source_version, start_date=start_date,
+        end_date=end_date, parameter_space=parameter_space, max_combinations=max_combinations,
+        objective=objective, seed=seed, embargo_bars=embargo_bars,
+        initial_capital=initial_capital, commission=commission, slippage=slippage,
+        leverage_enabled=leverage_enabled, leverage=leverage,
+    )
+    for key, value in (("folds", folds), ("trainRatio", train_ratio), ("holdoutRatio", holdout_ratio)):
+        if value is not None:
+            payload[key] = value
+    headers = _idempotency_headers(idempotency_key)
+    return _post("/api/agent/v1/optimization/walk-forward", json=payload, headers=headers)
 
 
 # Portfolio (read-only)
