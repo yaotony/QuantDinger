@@ -126,6 +126,8 @@ Every result you present carries:
 - The diagnosis from step 6 and the iteration log.
 - What remains unproven: a backtest says nothing about live credentials, balances, venue minimums, or latency.
 
+For the chosen run, `get_backtest_report(run_id=..., language=...)` returns the Markdown report the user can also download from the Backtest Center. Quote its figures, cost breakdown, and warnings instead of retyping metrics.
+
 ## Gateway map
 
 When MCP is not connected, call the Agent Gateway with `Authorization: Bearer $QUANTDINGER_AGENT_TOKEN`. Paths are relative to `/api/agent/v1`; `POST`/`PATCH` calls that need `W` or `B` also send an `Idempotency-Key` header. Request details are in [the strategy iteration guide](../../AGENT_STRATEGY_ITERATION.md) and [agent-openapi.json](../../agent-openapi.json).
@@ -146,4 +148,5 @@ When MCP is not connected, call the Agent Gateway with `Authorization: Bearer $Q
 | `list_jobs()` | `GET /jobs` | R |
 | `list_backtest_runs()` | `GET /backtest/runs` | R |
 | `get_backtest_run()` | `GET /backtest/runs/{run_id}` | R |
+| `get_backtest_report()` | `GET /backtest/runs/{run_id}/report` | R |
 | `create_strategy()` | `POST /strategies` | W |

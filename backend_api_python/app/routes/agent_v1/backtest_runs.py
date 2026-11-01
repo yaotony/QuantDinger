@@ -12,6 +12,13 @@ from datetime import datetime, time
 from typing import Any
 
 from app.services.strategy_v2 import StrategyBacktestRepository
+from app.services.strategy_v2.backtest_report import (
+    DEFAULT_REPORT_LANGUAGE,
+    REPORT_LANGUAGES,
+    render_backtest_report,
+    report_filename,
+    resolve_report_language,
+)
 from app.utils.agent_auth import SCOPE_R, agent_required, current_user_id
 from app.utils.logger import get_logger
 from flask import request
@@ -196,3 +203,36 @@ def get_backtest_run(run_id: int):
     if not row:
         return error(404, "Backtest run not found", http=404)
     return envelope(_project_run(row, include_result=True))
+
+
+@agent_v1_bp.route("/backtest/runs/<int:run_id>/report", methods=["GET"])
+@agent_required(SCOPE_R)
+def get_backtest_run_report(run_id: int):
+    """Render the tenant-owned run as the shared Markdown backtest report."""
+    raw_language = str(request.args.get("language") or "").strip()
+    language = resolve_report_language(raw_language) if raw_language else DEFAULT_REPORT_LANGUAGE
+    if language is None:
+        return error(
+            400,
+            "language must be one of: " + ", ".join(REPORT_LANGUAGES),
+            details={"supported": list(REPORT_LANGUAGES)},
+        )
+    try:
+        row = get_backtest_run_repository().get_run(user_id=current_user_id(), run_id=int(run_id))
+    except Exception:
+        logger.exception("agent_v1 backtest run report lookup failed")
+        return error(500, "get_backtest_report failed", retriable=True, http=500)
+    if not row:
+        return error(404, "Backtest run not found", http=404)
+    try:
+        markdown = render_backtest_report(row, language=language)
+    except Exception:
+        logger.exception("agent_v1 backtest run report rendering failed")
+        return error(500, "get_backtest_report failed", http=500)
+    return envelope({
+        "runId": row.get("id"),
+        "language": language,
+        "format": "markdown",
+        "filename": report_filename(row.get("id")),
+        "markdown": markdown,
+    })

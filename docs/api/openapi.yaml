@@ -2343,6 +2343,27 @@ paths:
       operationId: getApiBacktestGet
       summary: Get Api Backtest Get
       x-visibility: internal
+  /api/backtest/report:
+    get:
+      responses:
+        '200':
+          description: Markdown report attachment (backtest-run-{runId}.md)
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+      tags:
+      - Strategy
+      summary: Download a backtest run as a Markdown report
+      description: Returns the logged-in user's run identified by runId as a Markdown
+        attachment. The content is identical to the Agent Gateway report for the same
+        run and language (en-US, zh-CN or zh-TW; taken from the language query parameter,
+        X-App-Lang or Accept-Language, en-US otherwise). Runs owned by another user
+        return 404.
+      operationId: getApiBacktestReport
+      x-visibility: internal
   /api/strategy-evolution/parameter-space:
     get:
       responses:

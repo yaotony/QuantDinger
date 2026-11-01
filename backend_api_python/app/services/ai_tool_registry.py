@@ -592,6 +592,26 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         priority=87,
     ),
     ToolDefinition(
+        id="mcp.get_backtest_report",
+        category="backtest",
+        label_zh="读取回测报告",
+        label_en="Get backtest report",
+        description_zh=(
+            "用 runId 读取 Markdown 回测报告（摘要、成本拆解、交易诊断、执行假设、警告与策略版本），"
+            "与 Backtest Center 下载的内容相同。"
+        ),
+        description_en=(
+            "Read one backtest run as the Markdown report (summary, cost breakdown, trade "
+            "diagnostics, execution assumptions, warnings, strategy version) that the Backtest "
+            "Center download also produces."
+        ),
+        route="/api/agent/v1/backtest/runs/{run_id}/report",
+        requires=("run_id",),
+        produces=("backtest_report",),
+        risk_level="read",
+        priority=86,
+    ),
+    ToolDefinition(
         id="mcp.list_jobs",
         category="jobs",
         label_zh="列出任务",

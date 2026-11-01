@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 62
+    assert len(fresh_module.MCP_TOOL_NAMES) == 63
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
@@ -593,6 +593,26 @@ def test_backtest_history_tools_are_read_only_gateway_reads(monkeypatch, fresh_m
     assert calls[2] == ("/api/agent/v1/backtest/runs/41", None)
     assert "list_backtest_runs" not in WRITE_TOOLS
     assert "get_backtest_run" not in WRITE_TOOLS
+
+
+def test_get_backtest_report_is_read_only_gateway_read(monkeypatch, fresh_module):
+    from quantdinger_mcp.tool_contract import WRITE_TOOLS
+
+    calls = []
+    monkeypatch.setattr(
+        fresh_module,
+        "_get",
+        lambda path, params=None: calls.append((path, params)) or {"markdown": "# report"},
+    )
+
+    fresh_module.get_backtest_report(41)
+    fresh_module.get_backtest_report(41, language=" zh-TW ")
+
+    assert calls == [
+        ("/api/agent/v1/backtest/runs/41/report", {"language": "en-US"}),
+        ("/api/agent/v1/backtest/runs/41/report", {"language": "zh-TW"}),
+    ]
+    assert "get_backtest_report" not in WRITE_TOOLS
 
 
 def test_get_backtest_run_not_found_is_protocol_error(monkeypatch, fresh_module):

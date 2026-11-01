@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import re
 from pathlib import Path
@@ -286,6 +287,27 @@ def test_agent_openapi_documents_environment_contract():
 
     operation = spec["paths"]["/api/agent/v1/environment"]["get"]
     assert operation["x-scope-class"] == "R"
+
+
+def test_agent_openapi_documents_backtest_report_contract():
+    from app.routes.agent_v1 import backtest_runs
+    from app.services.strategy_v2.backtest_report import REPORT_LANGUAGES
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schema = spec["components"]["schemas"]["BacktestReport"]
+    route_source = inspect.getsource(backtest_runs.get_backtest_run_report)
+    for key in schema["required"]:
+        assert f'"{key}":' in route_source, key
+    assert set(schema["properties"]) == set(schema["required"])
+    assert schema["properties"]["language"]["enum"] == list(REPORT_LANGUAGES)
+
+    operation = spec["paths"]["/api/agent/v1/backtest/runs/{run_id}/report"]["get"]
+    assert operation["x-scope-class"] == "R"
+    language = next(item for item in operation["parameters"] if item["name"] == "language")
+    assert language["schema"]["enum"] == list(REPORT_LANGUAGES)
+    assert "#/components/schemas/BacktestReport" in json.dumps(operation["responses"]["200"])
 
 
 def test_mcp_metadata_matches_exported_tools_and_documented_routes():
