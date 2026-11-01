@@ -70,6 +70,8 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
+To backtest a saved source instead of resending code, send `"sourceId": 12` (optionally `"sourceVersion": 3`; the latest version when omitted) in place of `code`. Exactly one of `code` or `sourceId` is required, only your tenant's sources are accepted, and the receipt and job result report the version that ran as `strategySource`.
+
 Poll `/api/agent/v1/jobs/{job_id}` or consume `/api/agent/v1/jobs/{job_id}/stream`. Reuse an idempotency key when retrying the same submission.
 
 The submission checks the date range plus indicator warmup against the market and timeframe limit (for example 365 days for crypto `15m`) before it creates or bills a job. An oversized request returns HTTP 400 with `message: "strategyV2.backtestRangeLimit"` and `details` containing `max_days`, `warmup_days`, `recommended_start`, and `recommended_end`. When the warmup alone exceeds the limit, `recommendation_available` is `false` and the recommended dates are `null`; reduce the warmup or use a higher timeframe. If a job still fails for the same reason at run time (for example a dynamic universe), its `error` is the object `{code, message, details}` with the same `details`.

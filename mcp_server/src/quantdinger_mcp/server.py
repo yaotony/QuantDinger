@@ -199,6 +199,12 @@ def _idempotency_headers(key: str | None) -> dict[str, str]:
     return {"Idempotency-Key": value}
 
 
+def _positive_int_arg(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 def _request(method: str, path: str, **kwargs: Any) -> Any:
     try:
         return _unwrap(_client.request(method, path, **kwargs))
@@ -265,7 +271,8 @@ mcp = FastMCP(
         "Use list_strategy_templates, compile_strategy_code, and "
         "save_strategy_source before create_strategy. Source versions can be "
         "listed and restored only with explicit confirmation. submit_backtest "
-        "accepts Strategy API V2 Python code. "
+        "accepts Strategy API V2 Python code, or a saved source_id (optionally "
+        "source_version; latest when omitted) so iterations need not resend code. "
         "Long jobs: use wait_for_job or stream_job_until_done (bounded). "
         "Never pass natural language to backtest `code`."
     ),
@@ -801,9 +808,9 @@ def restore_strategy_source_version(
 
 @_tool
 def submit_backtest(
-    code: str,
-    start_date: str,
-    end_date: str,
+    code: str = "",
+    start_date: str = "",
+    end_date: str = "",
     initial_capital: float = 10000,
     commission: float | None = None,
     slippage: float | None = None,
@@ -811,8 +818,15 @@ def submit_backtest(
     leverage: float = 1.0,
     params: dict | None = None,
     idempotency_key: str = "",
+    source_id: int | None = None,
+    source_version: int | None = None,
 ) -> Any:
     """Submit a Strategy API V2 backtest; its manifest owns market data scope.
+
+    Pass exactly one of ``code`` (inline source) or ``source_id`` (a saved
+    strategy source owned by this tenant). ``source_version`` picks a version
+    number of that source; omit it to run the latest version. The receipt and
+    the job result report the version that ran as ``strategySource``.
 
     Omit ``commission`` and ``slippage`` to use the backend defaults (the same
     cost assumptions as the Backtest Center); pass explicit rates to override.
@@ -822,16 +836,27 @@ def submit_backtest(
     ``details`` carry ``max_days``, ``warmup_days``, ``recommended_start``
     and ``recommended_end``, is returned verbatim.
     """
-    assert_code_size(code, label="Strategy code")
-    payload: dict[str, Any] = {
-        "code": code,
+    has_code = bool(str(code or "").strip())
+    if has_code == (source_id is not None):
+        raise ValueError("Provide exactly one of code or source_id")
+    if source_version is not None and source_id is None:
+        raise ValueError("source_version requires source_id")
+    payload: dict[str, Any] = {}
+    if has_code:
+        assert_code_size(code, label="Strategy code")
+        payload["code"] = code
+    else:
+        payload["sourceId"] = _positive_int_arg("source_id", source_id)
+        if source_version is not None:
+            payload["sourceVersion"] = _positive_int_arg("source_version", source_version)
+    payload.update({
         "startDate": start_date,
         "endDate": end_date,
         "initialCapital": initial_capital,
         "leverageEnabled": bool(leverage_enabled),
         "leverage": leverage,
         "params": assert_json_dict("params", params),
-    }
+    })
     # Cost fields are only sent when set so the backend owns the defaults.
     if commission is not None:
         payload["commission"] = commission

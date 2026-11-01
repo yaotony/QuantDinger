@@ -123,7 +123,12 @@ curl -X POST http://localhost:8888/api/agent/v1/strategy-sources \
 
 ## 步驟 4：送出回測
 
-`/backtest/run` 接收的是源碼本身（不是 source id）。請送出與已儲存版本完全相同的程式碼。
+`/backtest/run` 必須擇一提供：
+
+- `sourceId`（源碼存檔後建議使用）：執行自己租戶已儲存的源碼。加上 `sourceVersion`（`GET /strategy-sources/{id}/versions` 回傳的 `version_no`）可指定版本快照；不帶就用最新版。指定其他租戶的源碼會回 404。
+- `code`：未存檔實驗用的內嵌源碼。
+
+兩者都帶或都不帶會回 400。使用 `sourceId` 時，伺服器在受理 job 當下就解析並鎖定版本，之後再存檔也不會改變排隊中 job 實際執行的程式碼。
 
 ```bash
 curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
@@ -131,7 +136,8 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: lab-bt-ema-v1-2024" \
   -d '{
-    "code": "<與已儲存版本相同的源碼>",
+    "sourceId": 12,
+    "sourceVersion": 1,
     "startDate": "2024-01-01",
     "endDate": "2024-12-31",
     "initialCapital": 10000,
@@ -142,14 +148,16 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
-可用欄位只有 `code`、`startDate`、`endDate`、`initialCapital`、`commission`、`slippage`、`leverageEnabled`、`leverage`、`params`、`instrumentRulesSnapshotId`；其他欄位會回 HTTP 400。送出成功回 HTTP 202，內含 `data.job_id` 與 `status: "queued"`。
+可用欄位只有 `code`、`sourceId`、`sourceVersion`、`startDate`、`endDate`、`initialCapital`、`commission`、`slippage`、`leverageEnabled`、`leverage`、`params`、`instrumentRulesSnapshotId`；其他欄位會回 HTTP 400。送出成功回 HTTP 202，內含 `data.job_id` 與 `status: "queued"`。使用 `sourceId` 時，回執與 job 結果還會帶 `strategySource: {sourceId, versionId, versionNo}`，也就是實際執行的版本。
 
 MCP 對應寫法：
 
 ```text
-submit_backtest(code=..., start_date="2024-01-01", end_date="2024-12-31",
+submit_backtest(source_id=12, source_version=1, start_date="2024-01-01", end_date="2024-12-31",
                 initial_capital=10000, params={...}, idempotency_key="lab-bt-ema-v1-2024")
 ```
+
+未存檔的實驗改傳 `code=...`，不要同時傳 `source_id`。
 
 同時執行的 job 有上限：每個租戶預設 4 個、每個 Token 預設 2 個。收到 HTTP 429 時，先等執行中的 job 結束再送。
 
@@ -173,7 +181,7 @@ MCP：`wait_for_job(job_id)` 會輪詢到結束狀態；`stream_job_until_done(j
 
 結束狀態有 `succeeded`、`failed`、`cancelled`：
 
-- `succeeded`：`result.runId` 是存進回測中心的歷史紀錄編號。請和 source id、版本一起記到迭代紀錄。
+- `succeeded`：`result.runId` 是存進回測中心的歷史紀錄編號。用 `sourceId` 送出的回測，`result.strategySource` 會記錄實際執行的 source id 與版本；請和 `runId` 一起記到迭代紀錄。
 - `failed`：`error` 可能是字串，第一行開頭就是錯誤代碼；若是結構化的失敗（例如執行時才發生的 `strategyV2.backtestRangeLimit`，常見於動態 universe），`error` 則是 `{code, message, details}` 物件。處理方式見[錯誤代碼](#錯誤代碼與處理方式)。
 - 用戶端逾時不代表 job 失敗。重送之前先查 `GET /jobs/{job_id}` 或 `GET /jobs?kind=backtest`。不再需要的 job 可用 `POST /jobs/{job_id}/cancel` 取消（B 權限、新的 idempotency key）。
 
@@ -246,7 +254,11 @@ warmup 換算的日曆天數（`warmupBars` 取自 manifest）：
 | --- | --- | --- |
 | 400 `strategyV2.*` 編譯訊息 | 源碼無法編譯 | 修正源碼，用 `/strategy-sources/compile` 重新編譯 |
 | 400 `strategyV2.backtestRangeLimit` | 抓取區間（區間＋warmup）超過該市場／週期上限；不會建立 job，也不計費 | 改用 `details.recommended_start`／`details.recommended_end`，或依[上限表](#回測區間上限)縮短區間。`details` 也含 `max_days` 與 `warmup_days`。若 `details.recommendation_available` 為 false（建議日期為 `null`），代表光 warmup 就超限：降低 `set_warmup`／回看長度，或改用較高週期 |
-| 400 `Unsupported backtest fields: ...` | 請求含不支援的欄位（例如 `sourceId`） | 只送文件列出的欄位 |
+| 400 `Unsupported backtest fields: ...` | 請求含不支援的欄位（例如 `strategyId`） | 只送文件列出的欄位 |
+| 400 `Provide either code or sourceId, not both` / `code or sourceId is required` / `sourceVersion requires sourceId` | 源碼指定方式不正確 | `code` 與 `sourceId` 擇一送出 |
+| 404 `Strategy source not found` / `Strategy source version not found` | 源碼不存在或屬於其他租戶，或版本號不存在 | 用 `GET /strategy-sources` 與 `GET /strategy-sources/{id}/versions` 查詢 |
+| 403 `Strategy source code is hidden` | 市集購買、程式碼隱藏的源碼 | 改從回測中心介面回測 |
+| 409 `Strategy source has no saved version` | 舊源碼沒有版本快照 | 先存檔一次（`PATCH /strategy-sources/{id}`）建立版本 |
 | 400 `startDate and endDate are required`／`Invalid date` | 日期缺少或格式錯誤 | 使用 `YYYY-MM-DD` |
 | 400 `Idempotency-Key header is required ...` | 沒帶 key | 加上唯一的 `Idempotency-Key` |
 | 409 `Idempotency-Key was already used with a different request` | 同一個 key 用在不同內容 | 每個不同請求產生新的 key |

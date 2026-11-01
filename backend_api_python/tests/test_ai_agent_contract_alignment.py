@@ -185,6 +185,27 @@ def test_agent_openapi_documents_backtest_range_limit_contract():
     assert set(schemas["JobFailure"]["required"]) == {"code", "message", "details"}
 
 
+def test_agent_openapi_documents_backtest_source_contract():
+    from app.routes.agent_v1 import backtests
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    request_schema = schemas["BacktestRequest"]
+    assert set(request_schema["properties"]) == backtests._BACKTEST_FIELDS
+    assert "code" not in request_schema["required"]
+    assert [alt["required"] for alt in request_schema["oneOf"]] == [["code"], ["sourceId"]]
+
+    ref = {"sourceId": 1, "versionId": 2, "versionNo": 3, "name": "internal"}
+    assert set(schemas["BacktestStrategySource"]["properties"]) == set(
+        backtests._public_source_ref(ref)
+    )
+    responses = spec["paths"]["/api/agent/v1/backtest/run"]["post"]["responses"]
+    assert "#/components/schemas/BacktestStrategySource" in json.dumps(responses["202"])
+    assert "404" in responses
+
+
 def test_mcp_metadata_matches_exported_tools_and_documented_routes():
     metadata_names = {tool.id.removeprefix("mcp.") for tool in MCP_AGENT_TOOLS}
     assert metadata_names == _mcp_tool_names()
