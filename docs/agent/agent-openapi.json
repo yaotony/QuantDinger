@@ -246,9 +246,16 @@
       "BacktestRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["code","startDate","endDate"],
+        "required": ["startDate","endDate"],
+        "description": "Provide exactly one of `code` (inline source) or `sourceId` (a saved, tenant-owned strategy source). `sourceVersion` selects a version of that source; omit it to use the latest version.",
+        "oneOf": [
+          { "required": ["code"], "not": { "anyOf": [ { "required": ["sourceId"] }, { "required": ["sourceVersion"] } ] } },
+          { "required": ["sourceId"], "not": { "required": ["code"] } }
+        ],
         "properties": {
-          "code":             { "type": "string", "description": "Strategy API V2 Python code using initialize(context) and a runtime handler" },
+          "code":             { "type": "string", "description": "Strategy API V2 Python code using initialize(context) and a runtime handler. Mutually exclusive with sourceId." },
+          "sourceId":         { "type": "integer", "minimum": 1, "description": "Saved strategy source owned by the caller's tenant. Another tenant's source returns 404." },
+          "sourceVersion":    { "type": "integer", "minimum": 1, "description": "Per-source version number (`version_no` from GET /strategy-sources/{id}/versions). Requires sourceId; defaults to the latest version." },
           "startDate":        { "type": "string", "format": "date", "example": "2024-01-01" },
           "endDate":          { "type": "string", "format": "date", "example": "2024-12-31" },
           "initialCapital":   { "type": "number", "minimum": 0, "exclusiveMinimum": true, "default": 10000 },
@@ -256,7 +263,18 @@
           "slippage":         { "type": "number", "nullable": true },
           "leverageEnabled":  { "type": "boolean", "default": false },
           "leverage":         { "type": "number", "default": 1 },
-          "params":           { "type": "object" }
+          "params":           { "type": "object" },
+          "instrumentRulesSnapshotId": { "type": "string" }
+        }
+      },
+      "BacktestStrategySource": {
+        "type": "object",
+        "description": "The saved strategy source version a backtest ran. Returned on the 202 receipt and in the job result as `strategySource` when the request used sourceId.",
+        "required": ["sourceId", "versionId", "versionNo"],
+        "properties": {
+          "sourceId":  { "type": "integer" },
+          "versionId": { "type": "integer", "description": "Immutable version snapshot id" },
+          "versionNo": { "type": "integer", "description": "Per-source version number" }
         }
       },
       "StrategyDeploymentRequest": {
@@ -644,12 +662,34 @@
         "parameters": [
           { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
         ],
-        "description": "Compiles the strategy and checks the date range plus indicator warmup against the market/timeframe limit before a job is accepted or billed. An oversized range returns 400 with `message` `strategyV2.backtestRangeLimit` and `details` containing the limit, warmup days, and suggested dates.",
+        "description": "Runs either inline `code` or a saved strategy source (`sourceId`, optional `sourceVersion`; latest version when omitted). The resolved version is pinned at submit time and reported as `strategySource` on the receipt and the job result. Compiles the strategy and checks the date range plus indicator warmup against the market/timeframe limit before a job is accepted or billed. An oversized range returns 400 with `message` `strategyV2.backtestRangeLimit` and `details` containing the limit, warmup days, and suggested dates.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BacktestRequest" } } } },
         "responses": {
-          "202": { "description": "Queued" },
+          "202": {
+            "description": "Queued. Carries `strategySource` when the request used sourceId.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "job_id": { "type": "string" },
+                        "status": { "type": "string" },
+                        "strategySource": { "$ref": "#/components/schemas/BacktestStrategySource" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": { "description": "Market or instrument not allowed by the token, or the strategy source code is hidden" },
+          "404": { "description": "Strategy source or version not found for this tenant (including another tenant's source)" },
+          "409": { "description": "Strategy source has no saved version" },
           "400": {
-            "description": "Invalid request, compile failure, or range/warmup limit exceeded (`details` is `BacktestRangeLimitDetails`)",
+            "description": "Invalid request (including both or neither of code/sourceId), compile failure, or range/warmup limit exceeded (`details` is `BacktestRangeLimitDetails`)",
             "content": {
               "application/json": {
                 "schema": {

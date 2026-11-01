@@ -126,7 +126,12 @@ Saving is optional for a single experiment, but it keeps an audit trail of what 
 
 ## Step 4: Submit a backtest
 
-`/backtest/run` takes the source code itself (not a source id). Submit exactly the code that was saved.
+`/backtest/run` takes exactly one of:
+
+- `sourceId` (recommended once the source is saved): runs a saved source owned by your tenant. Add `sourceVersion` (the `version_no` from `GET /strategy-sources/{id}/versions`) to pin a snapshot; omit it to run the latest version. Another tenant's source returns 404.
+- `code`: inline source for unsaved experiments.
+
+Sending both, or neither, returns 400. With `sourceId`, the server resolves and pins the version when the job is accepted, so a later save does not change what the queued job runs.
 
 ```bash
 curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
@@ -134,7 +139,8 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: lab-bt-ema-v1-2024" \
   -d '{
-    "code": "<same source as the saved version>",
+    "sourceId": 12,
+    "sourceVersion": 1,
     "startDate": "2024-01-01",
     "endDate": "2024-12-31",
     "initialCapital": 10000,
@@ -145,14 +151,16 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
   }'
 ```
 
-Accepted fields are `code`, `startDate`, `endDate`, `initialCapital`, `commission`, `slippage`, `leverageEnabled`, `leverage`, `params`, and `instrumentRulesSnapshotId`; anything else is rejected with HTTP 400. A successful submission returns HTTP 202 with `data.job_id` and `status: "queued"`.
+Accepted fields are `code`, `sourceId`, `sourceVersion`, `startDate`, `endDate`, `initialCapital`, `commission`, `slippage`, `leverageEnabled`, `leverage`, `params`, and `instrumentRulesSnapshotId`; anything else is rejected with HTTP 400. A successful submission returns HTTP 202 with `data.job_id` and `status: "queued"`. When the request used `sourceId`, the receipt and the job result also carry `strategySource: {sourceId, versionId, versionNo}`, the exact version that ran.
 
 MCP equivalent:
 
 ```text
-submit_backtest(code=..., start_date="2024-01-01", end_date="2024-12-31",
+submit_backtest(source_id=12, source_version=1, start_date="2024-01-01", end_date="2024-12-31",
                 initial_capital=10000, params={...}, idempotency_key="lab-bt-ema-v1-2024")
 ```
+
+Pass `code=...` instead of `source_id` for an unsaved experiment.
 
 Concurrency is capped per tenant (default 4) and per token (default 2). On HTTP 429, wait for running jobs to finish before submitting more.
 
@@ -176,7 +184,7 @@ MCP: `wait_for_job(job_id)` polls until a terminal state; `stream_job_until_done
 
 Terminal states are `succeeded`, `failed`, and `cancelled`.
 
-- On `succeeded`, `result.runId` is the saved Backtest Center history record. Keep it with the source id and version for the iteration log.
+- On `succeeded`, `result.runId` is the saved Backtest Center history record. For `sourceId` runs, `result.strategySource` records the source id and version that ran; keep both with `runId` in the iteration log.
 - On `failed`, `error` is either a string whose first line starts with the failure code, or, for structured failures such as a run-time `strategyV2.backtestRangeLimit` (for example with a dynamic universe), the object `{code, message, details}`. See [error codes](#error-codes-and-handling).
 - A client timeout does not mean the job failed. Check `GET /jobs/{job_id}` or `GET /jobs?kind=backtest` before submitting a duplicate. Cancel a job you no longer need with `POST /jobs/{job_id}/cancel` (B scope, new idempotency key).
 
@@ -273,7 +281,11 @@ The response contains:
 | --- | --- | --- |
 | 400 `strategyV2.*` compile message | source does not compile | fix the source; recompile with `/strategy-sources/compile` |
 | 400 `strategyV2.backtestRangeLimit` | fetch window (range + warmup) exceeds the market/timeframe limit; no job is created or billed | use `details.recommended_start` / `details.recommended_end`, or shorten the range using the [limit table](#backtest-range-limits). `details` also carries `max_days` and `warmup_days`. If `details.recommendation_available` is false (recommended dates are `null`), warmup alone exceeds the limit: reduce `set_warmup`/lookbacks or use a higher timeframe |
-| 400 `Unsupported backtest fields: ...` | request contains unknown fields (for example `sourceId`) | send only the documented fields |
+| 400 `Unsupported backtest fields: ...` | request contains unknown fields (for example `strategyId`) | send only the documented fields |
+| 400 `Provide either code or sourceId, not both` / `code or sourceId is required` / `sourceVersion requires sourceId` | invalid source selection | send exactly one of `code` or `sourceId` |
+| 404 `Strategy source not found` / `Strategy source version not found` | the source is missing or belongs to another tenant, or the version number does not exist | list sources and versions with `GET /strategy-sources` and `GET /strategy-sources/{id}/versions` |
+| 403 `Strategy source code is hidden` | purchased marketplace source whose code is hidden | backtest it from the Backtest Center UI |
+| 409 `Strategy source has no saved version` | legacy source without a version snapshot | save the source once (`PATCH /strategy-sources/{id}`) to create a version |
 | 400 `startDate and endDate are required` / `Invalid date` | missing or malformed dates | use `YYYY-MM-DD` |
 | 400 `Idempotency-Key header is required ...` | missing key | add a unique `Idempotency-Key` |
 | 409 `Idempotency-Key was already used with a different request` | key reused for a different body | generate a new key per distinct request |

@@ -406,6 +406,64 @@ def test_submit_backtest_uses_strategy_v2_payload(monkeypatch, fresh_module):
     assert captured["headers"] == {"Idempotency-Key": "same-key"}
 
 
+def _capture_backtest_post(monkeypatch, fresh_module) -> dict:
+    captured: dict = {}
+
+    def fake_post(path, json=None, headers=None):
+        captured["path"] = path
+        captured["json"] = json
+        return {"job_id": "job-test"}
+
+    monkeypatch.setattr(fresh_module, "_post", fake_post)
+    return captured
+
+
+def test_submit_backtest_by_source_id_sends_no_code(monkeypatch, fresh_module):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_backtest(
+        start_date="2024-01-01",
+        end_date="2024-06-30",
+        source_id=11,
+        source_version=2,
+        idempotency_key="source-run",
+    )
+
+    assert captured["path"] == "/api/agent/v1/backtest/run"
+    assert captured["json"]["sourceId"] == 11
+    assert captured["json"]["sourceVersion"] == 2
+    assert "code" not in captured["json"]
+
+
+def test_submit_backtest_by_source_id_defaults_to_latest(monkeypatch, fresh_module):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    fresh_module.submit_backtest(
+        start_date="2024-01-01", end_date="2024-06-30", source_id=11, idempotency_key="latest",
+    )
+
+    assert captured["json"]["sourceId"] == 11
+    assert "sourceVersion" not in captured["json"]
+
+
+@pytest.mark.parametrize(("kwargs", "match"), [
+    ({"code": "def initialize(context):\n    pass\n", "source_id": 11}, "exactly one"),
+    ({}, "exactly one"),
+    ({"code": "def initialize(context):\n    pass\n", "source_version": 1}, "requires source_id"),
+    ({"source_id": 0}, "positive integer"),
+    ({"source_id": True}, "positive integer"),
+    ({"source_id": 11, "source_version": -1}, "positive integer"),
+])
+def test_submit_backtest_rejects_invalid_source_selection(monkeypatch, fresh_module, kwargs, match):
+    captured = _capture_backtest_post(monkeypatch, fresh_module)
+
+    with pytest.raises(ValueError, match=match):
+        fresh_module.submit_backtest(
+            start_date="2024-01-01", end_date="2024-06-30", idempotency_key="bad", **kwargs,
+        )
+    assert captured == {}
+
+
 def test_submit_backtest_returns_range_limit_details_verbatim(monkeypatch, fresh_module):
     details = {
         "error_type": "BACKTEST_RANGE_LIMIT",
