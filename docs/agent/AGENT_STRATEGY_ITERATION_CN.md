@@ -4,6 +4,7 @@
 
 相關文件：
 
+- [QuantDinger Agent Skill](AGENT_SKILL_CN.md)：把這套流程、安全規則與防過度擬合規則包成可安裝的 `SKILL.md`，供 Claude Code、Codex、OpenClaw 使用。
 - [Agent Gateway 快速開始](AGENT_QUICKSTART_CN.md)：認證、Scope 與冪等。
 - [MCP 接入指南](MCP_SETUP_CN.md)：把 Agent 接上 MCP server。
 - [agent-openapi.json](agent-openapi.json)：機器可讀的介面契約。
