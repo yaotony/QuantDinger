@@ -44,6 +44,8 @@ curl -X POST http://localhost:8888/api/agent/v1/strategies \
 
 回测异步执行。提交后轮询 `/jobs/{job_id}`，或订阅 `/jobs/{job_id}/stream`。取消任务使用 `POST /jobs/{job_id}/cancel`，需要 `B` Scope、新幂等键以及 MCP 层确认。
 
+完整的设计与迭代流程、回测区间上限和错误处理见 [Agent 策略设计与回测迭代流程](AGENT_STRATEGY_ITERATION_CN.md)。
+
 ## 4. 研究、指标与交易
 
 - `/research/*`：点时点股票池、因子元数据和租户自选列表。

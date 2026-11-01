@@ -9,6 +9,8 @@ QuantDinger 只有一套当前可执行的 Python 策略契约：**Strategy API 
 
 图表指标是另一种产物。指标中的 plots、signals 和 layers 不能下单，必须先转换成 Strategy API V2。
 
+> **外部 Agent：** 不打开浏览器设计策略并迭代回测（创建 Agent Token、编译 → 保存 → 回测 → 轮询 job、回测区间上限与错误处理），请按照 [Agent 策略设计与回测迭代流程](../agent/AGENT_STRATEGY_ITERATION_CN.md) 操作。
+
 ---
 
 ## 1. 快速开始：最小可运行策略

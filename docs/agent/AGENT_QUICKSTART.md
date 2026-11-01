@@ -72,6 +72,8 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
 
 Poll `/api/agent/v1/jobs/{job_id}` or consume `/api/agent/v1/jobs/{job_id}/stream`. Reuse an idempotency key when retrying the same submission.
 
+For the full design-and-iterate loop, backtest range limits, and error handling, see [Agent strategy design and backtest iteration](AGENT_STRATEGY_ITERATION.md).
+
 Successful backtests also save a standard Backtest Center history record for the
 agent token's user. The completed job's `result.runId` identifies that record;
 the initial submission still returns `job_id` while the run is queued. The result

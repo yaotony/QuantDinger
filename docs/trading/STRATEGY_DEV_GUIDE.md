@@ -9,6 +9,8 @@ The source owns its market, instruments, timeframe, schedules, and trading logic
 
 Chart indicators are separate artifacts. Their plots, signals, and layers cannot place orders. Convert an indicator into Strategy API V2 before backtesting or deploying it.
 
+> **External agents:** to design strategies and iterate on backtests without a browser (Agent Token setup, compile → save → backtest → job polling, range limits, and error handling), follow [Agent strategy design and backtest iteration](../agent/AGENT_STRATEGY_ITERATION.md).
+
 ---
 
 ## 1. Quick start: a minimal executable strategy
