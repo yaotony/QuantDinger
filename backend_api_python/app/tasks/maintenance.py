@@ -111,6 +111,17 @@ def run_tw_kline_collect():
 
 
 @celery_app.task(
+    name="quantdinger.tasks.taifex_daily_collect",
+    soft_time_limit=max(60, int(os.getenv("TAIFEX_DAILY_COLLECT_TIME_LIMIT_SEC", "300"))),
+)
+def run_taifex_daily_collect():
+    """Store TWFutures 1D bars from the TAIFEX OpenAPI daily report, then check freshness."""
+    from app.services.taifex_daily_openapi import run_scheduled_daily_collect
+
+    return run_scheduled_daily_collect()
+
+
+@celery_app.task(
     name="quantdinger.tasks.taifex_tick_backfill",
     soft_time_limit=max(60, int(os.getenv("TAIFEX_TICK_BACKFILL_TIME_LIMIT_SEC", "900"))),
 )

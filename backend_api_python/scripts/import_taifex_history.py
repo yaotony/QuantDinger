@@ -1,5 +1,11 @@
 """Import TAIFEX futures history into ``qd_tw_klines`` (``source=taifex``).
 
+Manual history import from the TAIFEX website. The day-to-day data comes from
+the TAIFEX OpenAPI through Celery Beat (``taifex-daily-collect`` for 1D bars,
+``taifex-tick-backfill`` for 1m bars), but the OpenAPI only serves the latest
+trading day; use this script for anything older (years of daily reports, tick
+files of earlier days).
+
 Daily bars (downloads the TAIFEX daily report month by month, 1 s apart):
     python scripts/import_taifex_history.py --daily --from 2020-01-01 --to 2026-10-31 --products TX,MTX,TMF
 
@@ -54,7 +60,13 @@ def tick_files(paths: Sequence[str]) -> List[Path]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Import TAIFEX futures history into qd_tw_klines.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Import TAIFEX futures history into qd_tw_klines from the TAIFEX website. "
+            "The scheduled jobs (taifex-daily-collect, taifex-tick-backfill) already store "
+            "the latest trading day from the TAIFEX OpenAPI; use this script for older history."
+        ),
+    )
     parser.add_argument("--daily", action="store_true", help="download and import daily bars")
     parser.add_argument("--from", dest="start", type=date.fromisoformat, help="first date (YYYY-MM-DD)")
     parser.add_argument("--to", dest="end", type=date.fromisoformat, help="last date (YYYY-MM-DD)")

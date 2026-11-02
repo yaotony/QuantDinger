@@ -1,7 +1,15 @@
 """TAIFEX public futures history: parse and import into ``qd_tw_klines`` (``source=taifex``).
 
 Fubon serves no futures history, so the daily accumulation (``tw_kline_collector``)
-starts on the day it was switched on. Two TAIFEX downloads fill the past:
+starts on the day it was switched on. Two TAIFEX website downloads fill the past.
+
+Division of work with the TAIFEX OpenAPI: the scheduled jobs use the OpenAPI,
+which only serves the latest trading day: ``app.services.taifex_daily_openapi``
+(``DailyMarketReportFut`` -> 1D bars) and ``app.services.taifex_tick_backfill``
+(``TimeAndSalesData`` -> 1m bars, falling back to the web tick ZIP below for the
+other recent days). This module keeps the website downloads for everything the
+OpenAPI cannot serve: the multi-year daily-report import and tick files older
+than the latest day, run manually with ``scripts/import_taifex_history.py``.
 
 * Daily market report ("每日行情下載", ``futDataDown``): one row per contract month
   and session with open / high / low / close / volume, back many years. Stored as

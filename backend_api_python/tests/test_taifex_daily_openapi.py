@@ -125,6 +125,15 @@ class FakeRepository:
             self.bars[key] = {**bar, "source": source}
         return len(rows)
 
+    def latest_bar_time(self, *, market, session, timeframe, source, since=None):
+        floor = int(since.timestamp()) if since is not None else None
+        times = [
+            ts for (m, _symbol, s, tf, ts), bar in self.bars.items()
+            if (m, s, tf) == (market, session, timeframe) and bar["source"] == source
+            and (floor is None or ts >= floor)
+        ]
+        return max(times) if times else None
+
     def load_statuses(self, since):
         return {key: value for key, value in self.statuses.items() if key[3] >= since}
 
@@ -360,3 +369,120 @@ def test_entry_point_uses_given_dependencies():
         client=FakeClient(OPENAPI_ROWS), repository=repo, is_trading_day=weekdays(), lookback=1,
     )
     assert result["collected"] == [{"trade_date": "2026-10-30", "bars": 4}]
+
+
+# --------------------------------------------------------------------------- schedule (#79)
+@pytest.fixture
+def fubon_configured(monkeypatch):
+    from app.config.data_sources import FubonSidecarConfig
+
+    monkeypatch.setattr(type(FubonSidecarConfig), "CONFIGURED", property(lambda cls: True))
+    for name in (daily.ENABLED_ENV, daily.PRODUCTS_ENV, daily.NOT_BEFORE_ENV):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _scheduled(now: datetime, client: FakeClient, repo: FakeRepository, **kwargs: Any) -> Dict[str, Any]:
+    kwargs.setdefault("is_trading_day", weekdays())
+    return daily.run_scheduled_daily_collect(now, client=client, repository=repo, **kwargs)
+
+
+def test_daily_collect_task_is_scheduled_on_the_maintenance_queue():
+    from app.celery_app import celery_app
+    import app.tasks.maintenance  # noqa: F401  (registers the task)
+
+    entry = celery_app.conf.beat_schedule["taifex-daily-collect"]
+    assert entry["task"] == "quantdinger.tasks.taifex_daily_collect"
+    assert entry["schedule"] >= 300
+    assert celery_app.conf.task_routes["quantdinger.tasks.taifex_daily_collect"] == {"queue": "maintenance"}
+    assert "quantdinger.tasks.taifex_daily_collect" in celery_app.tasks
+    # The tick backfill keeps its own entry.
+    assert celery_app.conf.beat_schedule["taifex-tick-backfill"]["task"] == "quantdinger.tasks.taifex_tick_backfill"
+
+
+def test_scheduled_collect_skips_when_disabled_or_without_fubon(monkeypatch, fubon_configured):
+    client = FakeClient(OPENAPI_ROWS)
+    monkeypatch.setenv(daily.ENABLED_ENV, "false")
+    assert _scheduled(_now("2026-11-02"), client, FakeRepository()) == {
+        "skipped": "TAIFEX_DAILY_COLLECT_ENABLED is off",
+    }
+
+    monkeypatch.setenv(daily.ENABLED_ENV, "true")
+    from app.config.data_sources import FubonSidecarConfig
+
+    monkeypatch.setattr(type(FubonSidecarConfig), "CONFIGURED", property(lambda cls: False))
+    assert _scheduled(_now("2026-11-02"), client, FakeRepository()) == {"skipped": "Fubon sidecar is not configured"}
+    assert client.calls == []
+
+
+def test_scheduled_collect_waits_for_the_morning_publication(monkeypatch, fubon_configured):
+    client = FakeClient(OPENAPI_ROWS)
+    result = _scheduled(_now("2026-11-02", "07:29"), client, FakeRepository())
+    assert result == {"skipped": "before 07:30 Asia/Taipei"}
+    assert client.calls == []
+
+    monkeypatch.setenv(daily.NOT_BEFORE_ENV, "06:45")
+    repo = FakeRepository()
+    # A UTC instant is converted to Asia/Taipei before the gate.
+    result = _scheduled(_now("2026-11-02", "06:50").astimezone(timezone.utc), client, repo, lookback=1)
+    assert result["collected"] == [{"trade_date": "2026-10-30", "bars": 4}]
+    assert result["freshness"] == {
+        "latest": "2026-10-30", "expected": "2026-10-30", "lag_trading_days": 0, "stale": False,
+    }
+
+
+def test_scheduled_collect_uses_the_configured_products(monkeypatch, fubon_configured):
+    monkeypatch.setenv(daily.PRODUCTS_ENV, "TXF")
+    repo = FakeRepository()
+    result = _scheduled(_now("2026-11-02"), FakeClient(OPENAPI_ROWS), repo, lookback=1)
+    assert set(result["written"]) == {"TXFK6/regular", "TXFK6/afterhours", "TXFL6/regular"}
+
+
+def test_freshness_warns_when_the_openapi_is_behind(fubon_configured):
+    repo = FakeRepository()
+    # Wednesday 11-04: Monday and Tuesday are due, but the OpenAPI still serves Friday 10-30.
+    result = _scheduled(_now("2026-11-04", "09:00"), FakeClient(OPENAPI_ROWS), repo, lookback=3)
+    assert result["freshness"] == {
+        "latest": "2026-10-30", "expected": "2026-11-03", "lag_trading_days": 2, "stale": True,
+    }
+
+
+def test_freshness_ignores_the_afterhours_label_of_the_next_trading_day():
+    """A 盤後 row of Friday is labelled Monday; only day-session bars count."""
+    repo = FakeRepository()
+    _collector(FakeClient(OPENAPI_ROWS), repo, lookback=1).run(_now("2026-11-02"))
+    assert repo.get("TXFK6", "afterhours", _midnight("2026-11-02")) is not None
+    fresh = daily.check_freshness(repo, _now("2026-11-03"), is_trading_day=weekdays())
+    assert fresh["latest"] == "2026-10-30"
+    assert fresh["stale"] is True and fresh["lag_trading_days"] == 1
+
+
+def test_freshness_with_no_stored_bars_counts_the_scan_window():
+    fresh = daily.check_freshness(FakeRepository(), _now("2026-11-03"), is_trading_day=weekdays())
+    assert fresh["latest"] is None and fresh["expected"] == "2026-11-02"
+    assert fresh["stale"] is True and fresh["lag_trading_days"] > 20
+
+
+def test_freshness_is_not_rechecked_when_every_day_is_collected(fubon_configured):
+    repo = FakeRepository()
+    repo.statuses[("TWFutures", STATUS_SYMBOL, STATUS_SESSION, date(2026, 10, 30))] = "success"
+    client = FakeClient(OPENAPI_ROWS)
+    result = _scheduled(_now("2026-11-02"), client, repo, lookback=1)
+    assert result["skipped"] == "every expected trading day already collected"
+    assert "freshness" not in result and client.calls == []
+
+
+def test_freshness_failure_does_not_fail_the_collection(fubon_configured):
+    class BrokenFreshness(FakeRepository):
+        def latest_bar_time(self, **kwargs):
+            raise RuntimeError("db down")
+
+    result = _scheduled(_now("2026-11-02"), FakeClient(OPENAPI_ROWS), BrokenFreshness(), lookback=1)
+    assert result["collected"] == [{"trade_date": "2026-10-30", "bars": 4}]
+    assert result["freshness"] == {"error": "db down"}
+
+
+def test_configured_not_before_and_products():
+    assert daily.configured_not_before("") == dtime(7, 30)
+    assert daily.configured_not_before("08:15") == dtime(8, 15)
+    assert daily.configured_not_before("late") == dtime(7, 30)
+    assert daily.configured_products("TXF,MTX") == ["TX", "MTX"]

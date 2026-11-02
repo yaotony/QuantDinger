@@ -146,6 +146,21 @@ python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
   14:50-05:10). Files may be Big5 or UTF-8.
 - **Idempotent:** every write is an upsert, and a bar that already has `source=fubon` is never
   replaced, so imports can be re-run at any time.
+- **Division of work:** the TAIFEX OpenAPI only serves the latest trading day, which the two Celery
+  Beat jobs below collect automatically. This script keeps the website downloads for manual imports
+  outside that range (years of daily bars, tick files of earlier days).
+- **Daily bars:** `quantdinger.tasks.taifex_daily_collect` (maintenance queue, every
+  `TAIFEX_DAILY_COLLECT_INTERVAL_SEC`, default 1800 s) reads the TAIFEX OpenAPI
+  `DailyMarketReportFut` and stores `TAIFEX_DAILY_COLLECT_PRODUCTS` (default `TX,MTX`) as
+  `source=taifex` 1D bars. The report is published at about 06:35 Asia/Taipei the morning after a
+  trading day, so the task does nothing before `TAIFEX_DAILY_COLLECT_NOT_BEFORE` (default `07:30`,
+  Asia/Taipei); once the last 5 trading days are collected each run costs one status query. Each day
+  is recorded in `qd_tw_kline_collect_status` as symbol `TAIFEX_DAILY`; a day the OpenAPI stopped
+  serving before it was collected is `missed` and needs `--daily`. After a run that had pending days,
+  the latest `source=taifex` day-session 1D bar in `qd_tw_klines` is compared with the latest trading
+  day due by the XTAI calendar, and a `TAIFEX daily bars are stale` warning is logged when it is
+  behind. `TAIFEX_DAILY_COLLECT_ENABLED=false` turns it off; it also skips itself while
+  `FUBON_SIDECAR_TOKEN` is empty.
 - **Daily gap fill:** `quantdinger.tasks.taifex_tick_backfill` (maintenance queue, every
   `TAIFEX_TICK_BACKFILL_INTERVAL_SEC`, default 3600 s) imports the trades of the last 5
   trading days before today for `TAIFEX_TICK_BACKFILL_PRODUCTS` (default `TX,MTX`) and adds the
@@ -163,7 +178,7 @@ python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
 
 | Timeframe | Data source | Reaches back to |
 |---|---|---|
-| `1D`, `1W` | 1m bars where stored, otherwise the imported daily bars | The `--daily --from` date (TAIFEX daily reports go back many years) |
+| `1D`, `1W` | 1m bars where stored, otherwise the TAIFEX daily bars (imported or collected daily) | The `--daily --from` date (TAIFEX daily reports go back many years) |
 | `1m` … `4H` | Stored 1m bars only (Fubon accumulation + TAIFEX tick files) | About 30 trading days before the first tick import, then continuous |
 
 Continuous codes (`TXF`) pick the near month of each day from the stored contracts, so import every
