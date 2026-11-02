@@ -313,12 +313,20 @@ class FakeImporter:
         return report
 
 
+class UnreachableOpenApi:
+    """OpenAPI client whose probe fails: every day falls back to the web tick file."""
+
+    def probe(self, endpoint):
+        raise ConnectionError("offline")
+
+
 def test_backfill_imports_previous_trading_days_and_retries_failures():
     repo = FakeRepository()
     importer = FakeImporter(fail=(date(2026, 10, 30),))
     now = datetime(2026, 11, 2, 1, 0, tzinfo=timezone.utc)  # Monday 09:00 Taipei
     result = taifex_tick_backfill.run_backfill(
-        now, importer=importer, repository=repo, products=["TX"], is_trading_day=weekdays(), lookback=3,
+        now, importer=importer, repository=repo, client=UnreachableOpenApi(),
+        products=["TX"], is_trading_day=weekdays(), lookback=3,
     )
     assert importer.days == [date(2026, 10, 28), date(2026, 10, 29), date(2026, 10, 30)]
     assert [item["trade_date"] for item in result["imported"]] == ["2026-10-28", "2026-10-29"]
@@ -327,7 +335,8 @@ def test_backfill_imports_previous_trading_days_and_retries_failures():
 
     retry = FakeImporter()
     taifex_tick_backfill.run_backfill(
-        now, importer=retry, repository=repo, products=["TX"], is_trading_day=weekdays(), lookback=3,
+        now, importer=retry, repository=repo, client=UnreachableOpenApi(),
+        products=["TX"], is_trading_day=weekdays(), lookback=3,
     )
     assert retry.days == [date(2026, 10, 30)]  # successful days are not downloaded again
 
