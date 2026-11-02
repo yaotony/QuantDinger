@@ -13,6 +13,13 @@ CALENDAR_BY_MARKET = {
     "HKStock": "XHKG",
     "AStock": "XSHG",
     "CNStock": "XSHG",
+    "TWStock": "XTAI",
+}
+
+# Markets whose provider labels daily bars at local midnight instead of UTC.
+_LOCAL_DAILY_LABEL_TZ = {
+    "HKStock": "Asia/Hong_Kong",
+    "TWStock": "Asia/Taipei",
 }
 
 
@@ -33,15 +40,17 @@ def equity_data_market(market: str, product=None, api_family: str = "") -> str:
 def equity_bar_session_date(value, market: str):
     stamp = pd.Timestamp(value)
     stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
-    return (stamp.tz_convert("Asia/Hong_Kong") if market == "HKStock" else stamp).date()
+    local_tz = _LOCAL_DAILY_LABEL_TZ.get(market)
+    return (stamp.tz_convert(local_tz) if local_tz else stamp).date()
 
 
 def equity_daily_bar_cutoff(market: str, now: Optional[datetime] = None) -> pd.Timestamp:
     """Include provider daily labels only through the last completed session."""
     session = latest_completed_session(market, now, data_delay_minutes=15)
     day = pd.Timestamp(session).tz_localize(None)
-    if market == "HKStock":
-        day = day.tz_localize("Asia/Hong_Kong").tz_convert("UTC").tz_localize(None)
+    local_tz = _LOCAL_DAILY_LABEL_TZ.get(market)
+    if local_tz:
+        day = day.tz_localize(local_tz).tz_convert("UTC").tz_localize(None)
     return day + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
 
 

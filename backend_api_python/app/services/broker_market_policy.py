@@ -73,8 +73,9 @@ BOT_TYPE_MARKETS: Dict[str, Set[str]] = {
 
 
 # Markets we recognize as legal canonical values. Anything outside this set
-# is considered analysis/backtest-only (e.g. CNStock, HKStock, MOEX, Futures
-# generic) and may not be used for live strategies.
+# is considered analysis/backtest-only (e.g. CNStock, MOEX, TWStock, Futures
+# generic) and may not be used for live strategies. TWStock is deliberately
+# absent: its Fubon data sidecar is read-only and has no order routing.
 LIVE_MARKET_CATEGORIES: Set[str] = {"Crypto", "USStock", "HKStock"}
 
 
@@ -176,7 +177,7 @@ def validate_strategy_config(
             raise ValueError(
                 f"market_category='{mc}' is not supported for live trading. "
                 f"Supported: {sorted(LIVE_MARKET_CATEGORIES)}. "
-                "(CNStock / MOEX / Futures are analysis-only.)"
+                "(CNStock / MOEX / TWStock / Futures are analysis-only.)"
             )
         if require_exchange:
             raise ValueError(
@@ -201,7 +202,7 @@ def validate_strategy_config(
         raise ValueError(
             f"market_category='{mc}' is not supported for live trading. "
             f"Supported: {sorted(LIVE_MARKET_CATEGORIES)}. "
-            "(CNStock / MOEX / Futures are analysis-only.)"
+            "(CNStock / MOEX / TWStock / Futures are analysis-only.)"
         )
 
     if mc and mc not in BROKER_MARKETS[ex]:

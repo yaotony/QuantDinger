@@ -41,8 +41,8 @@ def live_history_days(
     days = max(1, int(math.ceil(seconds / 86_400)))
     normalized = str(frequency or "").strip().lower()
     stock_session = any(
-        str(item.get("market") or "") in {"USStock", "HKStock", "CNStock", "AStock"}
-        or str(item.get("underlying_market") or "") in {"USStock", "HKStock", "CNStock", "AStock"}
+        str(item.get("market") or "") in {"USStock", "HKStock", "CNStock", "AStock", "TWStock"}
+        or str(item.get("underlying_market") or "") in {"USStock", "HKStock", "CNStock", "AStock", "TWStock"}
         or str(item.get("api_family") or "").strip().lower() == "stock"
         for item in candidates
     )

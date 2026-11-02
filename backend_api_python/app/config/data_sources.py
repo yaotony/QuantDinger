@@ -373,3 +373,34 @@ class MetaAkshareConfig(type):
 class AkshareConfig(metaclass=MetaAkshareConfig):
     """AkShare data source configuration."""
     pass
+
+
+DEFAULT_FUBON_SIDECAR_URL = "http://fubon-marketdata:8010"
+
+
+class MetaFubonSidecarConfig(type):
+    @property
+    def BASE_URL(cls):
+        value = _config_str('fubon_sidecar', 'base_url', 'FUBON_SIDECAR_URL', DEFAULT_FUBON_SIDECAR_URL)
+        return (value or DEFAULT_FUBON_SIDECAR_URL).rstrip('/')
+
+    @property
+    def TOKEN(cls):
+        return _config_str('fubon_sidecar', 'token', 'FUBON_SIDECAR_TOKEN')
+
+    @property
+    def TIMEOUT(cls):
+        try:
+            value = _config_float('fubon_sidecar', 'timeout', 'FUBON_SIDECAR_TIMEOUT', 15)
+        except (TypeError, ValueError):
+            return 15.0
+        return value if value > 0 else 15.0
+
+    @property
+    def CONFIGURED(cls):
+        return bool(cls.TOKEN)
+
+
+class FubonSidecarConfig(metaclass=MetaFubonSidecarConfig):
+    """Read-only Fubon market data sidecar used by the TWStock market."""
+    pass
