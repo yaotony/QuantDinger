@@ -253,6 +253,9 @@ def get_symbol_name(market: str, symbol: str) -> Optional[str]:
     candidate_symbols = [s]
     if m == 'Crypto' and '/' not in s:
         candidate_symbols.append(f"{s}/USDT")
+    # TWStock: a bare listed code (2330) may be a TWSE (.TW) or TPEx (.TWO) symbol.
+    if m == 'TWStock' and '.' not in s and not s.startswith('IX'):
+        candidate_symbols.extend([f"{s}.TW", f"{s}.TWO"])
 
     try:
         with _get_db_connection() as db:

@@ -856,6 +856,67 @@ def fetch_moex_symbols() -> List[SymbolMasterRow]:
     return _unique_rows(rows)
 
 
+# TWStock catalog rules. The sidecar ``/v1/stock/tickers`` rows only carry
+# ``symbol`` and ``name``, so instruments are classified by the TWSE / TPEx
+# security code conventions:
+#   - ordinary shares: four digits, first digit 1-9 (2330, 6488)
+#   - ETFs: ``00`` followed by 2-4 digits and an optional letter (0050, 00878,
+#     006208, 00631L, 00679B)
+#   - excluded: warrants (six digits such as 030001 / 70000P, also a separate
+#     ``WARRANT`` ticker type), convertible / corporate bonds (five digits such
+#     as 23301), ETNs (020000), preferred shares (2881A) and anything else.
+#   - full-delivery stocks share the ordinary-share code format and the
+#     sidecar ticker rows carry no flag for them, so they cannot be told apart
+#     here; excluding them needs a sidecar field or filter first.
+# Only the main indices are kept from the ``INDEX`` ticker lists.
+TW_STOCK_EXCHANGE_SUFFIX = {"TWSE": ".TW", "TPEx": ".TWO"}
+TW_MAIN_INDEX_CODES = frozenset({"IX0001", "IX0043"})
+_TW_ORDINARY_SHARE_RE = re.compile(r"^[1-9]\d{3}$")
+_TW_ETF_RE = re.compile(r"^00\d{2,4}[A-Z]?$")
+_TW_INDEX_RE = re.compile(r"^IX\d{4}$")
+
+
+def classify_tw_ticker(ticker_type: str, exchange: str, raw: Dict[str, object]) -> Optional[SymbolMasterRow]:
+    """Map one sidecar ticker row to a TWStock catalog row, or None when excluded."""
+    code = _clean_symbol(raw.get("symbol"))
+    name = _clean_text(raw.get("name"))
+    suffix = TW_STOCK_EXCHANGE_SUFFIX.get(exchange)
+    if not code or not name or not suffix:
+        return None
+    if ticker_type == "INDEX":
+        if _TW_INDEX_RE.match(code) and code in TW_MAIN_INDEX_CODES:
+            return SymbolMasterRow("TWStock", code, name, exchange, "TWD", asset_class="index")
+        return None
+    if ticker_type != "EQUITY":
+        return None
+    if _TW_ORDINARY_SHARE_RE.match(code):
+        asset_class = "equity"
+    elif _TW_ETF_RE.match(code) and len(code) <= 6:
+        asset_class = "etf"
+    else:
+        return None
+    return SymbolMasterRow("TWStock", f"{code}{suffix}", name, exchange, "TWD", asset_class=asset_class)
+
+
+def fetch_tw_stock_symbols(source=None) -> List[SymbolMasterRow]:
+    """Fetch TWSE / TPEx stocks, ETFs and main indices from the Fubon sidecar.
+
+    Raises ``FubonSidecarError`` when the sidecar is not configured or not
+    reachable so callers can log a warning and skip the TWStock catalog.
+    """
+    from app.data_sources.tw_stock import TWStockDataSource
+
+    source = source or TWStockDataSource()
+    rows: List[SymbolMasterRow] = []
+    for ticker_type in ("EQUITY", "INDEX"):
+        for exchange in TW_STOCK_EXCHANGE_SUFFIX:
+            for raw in source.get_tickers(ticker_type, exchange):
+                row = classify_tw_ticker(ticker_type, exchange, raw)
+                if row is not None:
+                    rows.append(row)
+    return _unique_rows(rows)
+
+
 FETCHERS = {
     "CNStock": fetch_cn_stock_symbols,
     "HKStock": fetch_hk_stock_symbols,
@@ -864,6 +925,7 @@ FETCHERS = {
     "Forex": fetch_forex_symbols,
     "Futures": fetch_futures_symbols,
     "MOEX": fetch_moex_symbols,
+    "TWStock": fetch_tw_stock_symbols,
 }
 
 
@@ -881,7 +943,7 @@ def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
                 (exchange_id, market_type),
             )
         for row in rows:
-            asset_class = row.asset_class or _default_asset_class(row.market)
+            asset_class = row.asset_class or _default_asset_class(row.market, row.symbol)
             cur.execute(
                 """
                 INSERT INTO qd_market_symbols
@@ -926,7 +988,14 @@ def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
         return count
 
 
-def _default_asset_class(market: str) -> str:
+def _default_asset_class(market: str, symbol: str = "") -> str:
+    if str(market or "") == "TWStock":
+        code = _clean_symbol(symbol).split(".", 1)[0]
+        if _TW_INDEX_RE.match(code):
+            return "index"
+        if _TW_ETF_RE.match(code):
+            return "etf"
+        return "equity"
     return {
         "Crypto": "crypto",
         "Forex": "forex",

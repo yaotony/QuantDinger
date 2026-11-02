@@ -159,6 +159,8 @@ def _normalize_symbol_for_market(market: str, symbol: str) -> str:
         return normalize_hk_code(s)
     if m == 'Crypto':
         return normalize_crypto_symbol(s)
+    if m == 'TWStock' and s.startswith('TWSTOCK:'):
+        return s.split(':', 1)[1].strip()
     return s
 
 
@@ -256,7 +258,10 @@ def resolve_symbol_name(market: str, symbol: str) -> Optional[str]:
             persist_seed_name(m, s, ext)
         return ext
 
-    # TWStock (Taiwan): the Fubon sidecar quote carries the listed short name.
+    # TWStock (Taiwan): names come from the symbol master synced from the Fubon
+    # sidecar ticker lists (step 1 above, including bare codes such as 2330).
+    # When the catalog has not been synced yet, the sidecar quote carries the
+    # listed short name.
     if m == 'TWStock':
         try:
             from app.data_sources.factory import DataSourceFactory

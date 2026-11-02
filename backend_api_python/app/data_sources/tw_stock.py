@@ -381,6 +381,15 @@ class TWStockDataSource(BaseDataSource):
             "symbol": display,
         }
 
+    def get_tickers(self, ticker_type: str, exchange: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return sidecar ``/v1/stock/tickers`` rows (``{symbol, name}``); [] when Fubon has none."""
+        params: Dict[str, Any] = {"type": ticker_type}
+        if exchange:
+            params["exchange"] = exchange
+        payload = self._request("/v1/stock/tickers", params)
+        rows = (payload or {}).get("tickers") or []
+        return [row for row in rows if isinstance(row, dict)]
+
     def get_earliest_kline_time(self, symbol: str, timeframe: str) -> Optional[int]:
         """D/W: one year back from today (Fubon's range). Minute: first of the latest 5 days."""
         code = self._normalize_symbol(symbol)

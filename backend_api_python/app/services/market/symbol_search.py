@@ -28,6 +28,9 @@ SYMBOL_SEARCH_CACHE_TTL_SEC = 21600
 _market_cache = CacheManager()
 _crypto_markets_cache: dict[str, dict] = {}
 CRYPTO_EXCHANGE_FALLBACK_ORDER = ("binance", "bitget", "bybit", "okx", "gate", "htx")
+# Markets whose search falls back to an external source when the local catalog misses.
+EXTERNAL_FALLBACK_MARKETS = frozenset({"USStock", "CNStock", "HKStock", "TWStock"})
+TW_STOCK_CATALOG_CACHE_KEY = "symbol_catalog:TWStock"
 
 
 def dedupe_symbol_results(items: Iterable[dict], limit: int) -> list:
@@ -100,7 +103,7 @@ def search_market_symbols(
         return out
 
     existing = {r["symbol"] for r in out}
-    if market in {"USStock", "CNStock", "HKStock"}:
+    if market in EXTERNAL_FALLBACK_MARKETS:
         out.extend(_search_external_symbols(market, keyword, limit - len(out), existing))
 
     return dedupe_symbol_results(out, limit)
@@ -125,7 +128,7 @@ def find_market_symbol(
             return None
         market_type = normalize_market_type(market_type, market=market)
         rows = _search_cached_crypto_symbols(symbol, 20, exchange_id, market_type)
-    elif market in {"USStock", "CNStock", "HKStock"}:
+    elif market in EXTERNAL_FALLBACK_MARKETS:
         local = dedupe_symbol_results(
             seed_search_symbols(market=market, keyword=symbol, limit=10),
             10,
@@ -498,6 +501,52 @@ def _search_us_yahoo(keyword: str, limit: int) -> list:
         return []
 
 
+def _load_tw_sidecar_catalog() -> list:
+    """Fetch and cache the TWStock catalog from the Fubon sidecar; persist it locally."""
+    cached = _market_cache.get(TW_STOCK_CATALOG_CACHE_KEY)
+    if isinstance(cached, list):
+        return cached
+    from app.services.symbol_master_sync import fetch_tw_stock_symbols, upsert_symbol_master
+
+    rows = fetch_tw_stock_symbols()
+    if not rows:
+        return []
+    try:
+        upsert_symbol_master(rows)
+    except Exception as exc:
+        logger.debug("TWStock catalog persist failed: %s", exc)
+    catalog = [
+        {
+            "market": row.market,
+            "symbol": row.symbol,
+            "name": row.name,
+            "exchange_id": row.exchange,
+            "asset_class": row.asset_class,
+        }
+        for row in rows
+    ]
+    _market_cache.set(TW_STOCK_CATALOG_CACHE_KEY, catalog, SYMBOL_SEARCH_CACHE_TTL_SEC)
+    return catalog
+
+
+def _search_tw_sidecar(keyword: str, limit: int) -> list:
+    if limit <= 0:
+        return []
+    try:
+        catalog = _load_tw_sidecar_catalog()
+    except Exception as exc:
+        logger.debug("TWStock sidecar symbol search failed: %s", exc)
+        return []
+    kw = keyword.strip().upper()
+    out = []
+    for item in catalog:
+        if kw in item["symbol"].upper() or kw in item["name"].upper():
+            out.append(dict(item))
+            if len(out) >= limit:
+                break
+    return out
+
+
 def _search_external_symbols(market: str, keyword: str, limit: int, existing: set) -> list:
     cache_key = f"symbol_search:{market}:{keyword.strip().upper()}:{limit}"
     cached = _market_cache.get(cache_key)
@@ -510,6 +559,8 @@ def _search_external_symbols(market: str, keyword: str, limit: int, existing: se
         rows = _search_hk_akshare(keyword, limit)
     elif market == "USStock":
         rows = _search_us_yahoo(keyword, limit)
+    elif market == "TWStock":
+        rows = _search_tw_sidecar(keyword, limit)
     else:
         rows = []
 
