@@ -165,7 +165,7 @@ Content-Type: application/json
 
 系统也会规范化部分别名，例如 <code>600519.XSHG</code> → <code>CNStock:600519.SH</code>、<code>BTCUSDT</code> → <code>BTC/USDT</code>。没有市场前缀时，以 <code>.TW</code>／<code>.TWO</code> 结尾的代码与 <code>IX</code> 指数代码会被推断为 <code>TWStock</code>。
 
-<code>TWStock</code> 数据来自只读的富邦行情 sidecar，只支持研究、回测与模拟盘，实盘策略会被拒绝。日／周 K 回测区间最长 1 年，分 K 回测最长 5 天（含指标预热）。
+<code>TWStock</code> 数据来自只读的富邦行情 sidecar，只支持研究、回测与模拟盘，实盘策略会被拒绝。日／周 K 回测区间最长 1 年（含指标预热）。分 K 与小时 K 由每日排程累积在 PostgreSQL 的 1 分 K（加上 sidecar 近 5 个交易日）重新取样，因此使用默认的回测区间上限；历史从排程第一次执行的交易日开始，data-coverage 会回报实际最早的一根。累积的代码（<code>TW_KLINE_COLLECT_SYMBOLS</code> 加上自选列表）见 [富邦 sidecar 说明](../../fubon_sidecar/README_CN.md)。
 
 券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code>、<code>MOEX</code> 和 <code>TWStock</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。只有通过交易所路由的 <code>Crypto</code> 身份才携带 <code>@venue:market_type</code> 后缀。
 

@@ -13,6 +13,7 @@ import pytest
 import requests
 
 from app.config import data_sources as data_source_config
+from app.data_sources.base import TIMEFRAME_SECONDS
 from app.data_sources.factory import DataSourceFactory
 from app.data_sources.tw_stock import (
     TIMEFRAME_MAP,
@@ -75,8 +76,37 @@ def sidecar_config(monkeypatch):
     monkeypatch.setattr(meta, "TIMEOUT", property(lambda cls: 3.0))
 
 
-def _source(handlers) -> tuple[TWStockDataSource, FakeSession]:
-    src = TWStockDataSource()
+class FakeStore:
+    """In-memory stand-in for TWKlineRepository (stored TWStock 1m bars)."""
+
+    def __init__(self, bars: List[Dict[str, Any]] | None = None, error: Exception | None = None) -> None:
+        self.bars = sorted(bars or [], key=lambda b: b["time"])
+        self.error = error
+        self.calls: List[Dict[str, Any]] = []
+
+    def load_bars(self, *, market, symbol, session, timeframe, start_ts=None, end_ts=None, limit=None):
+        self.calls.append({"market": market, "symbol": symbol, "session": session, "timeframe": timeframe,
+                           "start_ts": start_ts, "end_ts": end_ts, "limit": limit})
+        if self.error:
+            raise self.error
+        rows = [b for b in self.bars
+                if (start_ts is None or b["time"] >= start_ts) and (end_ts is None or b["time"] < end_ts)]
+        if limit is not None:
+            rows = rows[-limit:] if start_ts is None else rows[:limit]
+        return [dict(b) for b in rows]
+
+    def earliest_bar_time(self, **_kwargs):
+        if self.error:
+            raise self.error
+        return self.bars[0]["time"] if self.bars else None
+
+
+def _bar(ts: int, price: float, volume: float = 1.0) -> Dict[str, Any]:
+    return {"time": ts, "open": price, "high": price, "low": price, "close": price, "volume": volume}
+
+
+def _source(handlers, store: FakeStore | None = None) -> tuple[TWStockDataSource, FakeSession]:
+    src = TWStockDataSource(kline_store=store or FakeStore())
     session = FakeSession(handlers)
     src._session = session  # type: ignore[assignment]
     return src, session
@@ -171,37 +201,43 @@ def test_daily_range_is_capped_to_one_year(sidecar_config):
     assert params["from"] == "2024-09-30"
 
 
-def test_minute_kline_omits_range_and_merges_intraday(sidecar_config):
-    t0 = _taipei_ts("2025-10-30 09:00")
+def _recent_ts(days_ago: int, clock: str = "09:00") -> int:
+    day = datetime.now(tz=TAIPEI).date() - timedelta(days=days_ago)
+    return _taipei_ts(f"{day.isoformat()} {clock}")
+
+
+def test_minute_kline_requests_1m_and_merges_intraday(sidecar_config):
+    t0 = _recent_ts(1)
     src, session = _source({
         "/v1/stock/candles": lambda p: FakeResponse(200, _candles([
             (t0, 10, 10, 10, 10, 1),
-            (t0 + 300, 11, 11, 11, 11, 1),
+            (t0 + 60, 11, 11, 11, 11, 1),
         ])),
         "/v1/stock/intraday/candles": lambda p: FakeResponse(200, _candles([
-            (t0 + 300, 12, 12, 12, 12, 5),
-            (t0 + 600, 13, 13, 13, 13, 6),
+            (t0 + 60, 12, 12, 12, 12, 5),
+            (t0 + 120, 13, 13, 13, 13, 6),
         ])),
     })
 
-    rows = src.get_kline("2330.TW", "5m", limit=10)
+    rows = src.get_kline("2330.TW", "1m", limit=10)
 
-    assert [r["time"] for r in rows] == [t0, t0 + 300, t0 + 600]
+    assert [r["time"] for r in rows] == [t0, t0 + 60, t0 + 120]
     assert rows[1]["close"] == 12.0  # intraday bar wins for the same timestamp
-    assert session.calls[0]["params"] == {"symbol": "2330", "timeframe": "5"}
+    assert session.calls[0]["params"] == {"symbol": "2330", "timeframe": "1"}
     assert session.calls[1]["path"] == "/v1/stock/intraday/candles"
+    assert session.calls[1]["params"] == {"symbol": "2330", "timeframe": "1"}
 
 
 def test_minute_kline_with_before_time_skips_intraday(sidecar_config):
     src, session = _source({"/v1/stock/candles": lambda p: FakeResponse(200, _candles([]))})
 
-    src.get_kline("2330.TW", "1m", limit=10, before_time=_taipei_ts("2025-10-30 13:30"))
+    src.get_kline("2330.TW", "1m", limit=10, before_time=_recent_ts(1, "13:30"))
 
     assert [c["path"] for c in session.calls] == ["/v1/stock/candles"]
 
 
 def test_3m_is_resampled_from_1m(sidecar_config):
-    t0 = (_taipei_ts("2025-10-30 09:00") // 180) * 180
+    t0 = (_recent_ts(2) // 180) * 180
     src, _ = _source({
         "/v1/stock/candles": lambda p: FakeResponse(200, _candles([
             (t0, 10, 11, 9, 10.5, 1),
@@ -219,19 +255,126 @@ def test_3m_is_resampled_from_1m(sidecar_config):
     ]
 
 
-def test_4h_is_resampled_from_60m(sidecar_config):
-    t0 = (_taipei_ts("2025-10-30 09:00") // 14400) * 14400
+@pytest.mark.parametrize("timeframe", ["5m", "15m", "30m", "1H", "4H"])
+def test_intraday_timeframes_are_resampled_from_1m(sidecar_config, timeframe):
+    width = TIMEFRAME_SECONDS[timeframe]
+    t0 = (_recent_ts(2) // width) * width
     src, session = _source({
         "/v1/stock/candles": lambda p: FakeResponse(200, _candles([
-            (t0 + 3600, 10, 11, 9, 10, 1),
-            (t0 + 7200, 10, 13, 10, 12, 1),
+            (t0, 10, 11, 9, 10, 1),
+            (t0 + 60, 10, 13, 10, 12, 1),
         ])),
     })
 
-    rows = src.get_kline("IX0001", "4H", limit=10, before_time=t0 + 86400)
+    rows = src.get_kline("IX0001", timeframe, limit=10, before_time=t0 + 86400)
 
-    assert session.calls[0]["params"]["timeframe"] == "60"
+    assert {c["params"]["timeframe"] for c in session.calls} == {"1"}
     assert rows == [{"time": t0, "open": 10.0, "high": 13.0, "low": 9.0, "close": 12.0, "volume": 2.0}]
+
+
+# --- stored history (qd_tw_klines) + sidecar ----------------------------------------
+
+
+def _minute_run(start: int, count: int, price: float) -> List[Dict[str, Any]]:
+    return [_bar(start + 60 * i, price + i) for i in range(count)]
+
+
+def _sidecar_rows(bars: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return _candles([(b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"]) for b in bars])
+
+
+def test_stored_and_sidecar_minutes_join_without_duplicates_or_gaps(sidecar_config):
+    old_day = _recent_ts(3)
+    seam_day = _recent_ts(2)
+    new_day = _recent_ts(1)
+    stored = _minute_run(old_day, 5, 100) + _minute_run(seam_day, 5, 200)
+    # The sidecar's latest-5-days window overlaps the last stored day.
+    sidecar = _minute_run(seam_day, 5, 300) + _minute_run(new_day, 5, 400)
+    store = FakeStore(stored)
+    src, _ = _source({"/v1/stock/candles": lambda p: FakeResponse(200, _sidecar_rows(sidecar))}, store)
+
+    rows = src.get_kline("2330.TW", "1m", limit=1000)
+
+    times = [r["time"] for r in rows]
+    expected = sorted({b["time"] for b in stored} | {b["time"] for b in sidecar})
+    assert times == expected  # every bar once, nothing missing at the seam
+    assert len(times) == len(set(times)) == 15
+    seam = [r for r in rows if seam_day <= r["time"] < seam_day + 300]
+    assert [r["close"] for r in seam] == [300, 301, 302, 303, 304]  # sidecar wins on overlap
+    call = store.calls[0]
+    assert (call["market"], call["symbol"], call["session"], call["timeframe"]) == (
+        "TWStock", "2330", "regular", "1m",
+    )
+    assert call["limit"] == 1001
+
+
+def test_resampled_bucket_across_the_seam_is_complete(sidecar_config):
+    start = (_recent_ts(2) // 300) * 300
+    stored = _minute_run(start, 3, 10)  # minutes 0-2 of the bucket
+    sidecar = _minute_run(start + 180, 2, 20)  # minutes 3-4 of the bucket
+    src, _ = _source(
+        {"/v1/stock/candles": lambda p: FakeResponse(200, _sidecar_rows(sidecar))}, FakeStore(stored),
+    )
+
+    rows = src.get_kline("2330.TW", "5m", limit=10, before_time=start + 3600)
+
+    assert rows == [{"time": start, "open": 10.0, "high": 21.0, "low": 10.0, "close": 21.0, "volume": 5.0}]
+
+
+def test_old_window_reads_database_only(sidecar_config):
+    start = (_recent_ts(60) // 300) * 300
+    store = FakeStore(_minute_run(start, 10, 50))
+    src, session = _source({}, store)
+
+    rows = src.get_kline("2330.TW", "5m", limit=10, before_time=start + 86400)
+
+    assert session.calls == []
+    assert [r["time"] for r in rows] == [start, start + 300]
+    assert [r["volume"] for r in rows] == [5.0, 5.0]
+
+
+def test_backtest_window_reads_stored_range(sidecar_config):
+    start = (_recent_ts(40) // 900) * 900
+    store = FakeStore(_minute_run(start - 600, 40, 10))
+    src, session = _source({}, store)
+
+    rows = src.get_kline("2330.TW", "15m", limit=1, before_time=start + 1800, after_time=start)
+
+    assert session.calls == []
+    assert (store.calls[0]["start_ts"], store.calls[0]["end_ts"], store.calls[0]["limit"]) == (
+        start, start + 1800, None,
+    )
+    assert [r["time"] for r in rows] == [start, start + 900]  # after_time keeps the whole window
+
+
+def test_sidecar_down_falls_back_to_stored_bars(sidecar_config):
+    day = _recent_ts(2)
+    src, session = _source({}, FakeStore(_minute_run(day, 3, 10)))
+    session.get = _raising_session(requests.ConnectionError("boom"))  # type: ignore[method-assign]
+
+    rows = src.get_kline("2330.TW", "1m", limit=10)
+
+    assert [r["time"] for r in rows] == [day, day + 60, day + 120]
+
+
+def test_sidecar_down_without_stored_bars_raises(sidecar_config):
+    src, session = _source({}, FakeStore([]))
+    session.get = _raising_session(requests.ConnectionError("boom"))  # type: ignore[method-assign]
+
+    with pytest.raises(FubonSidecarError, match="unreachable"):
+        src.get_kline("2330.TW", "1m", limit=10)
+
+
+def test_database_down_degrades_to_sidecar(sidecar_config):
+    t0 = _recent_ts(1)
+    src, _ = _source(
+        {"/v1/stock/candles": lambda p: FakeResponse(200, _candles([(t0, 10, 10, 10, 10, 1)]))},
+        FakeStore(error=RuntimeError("db down")),
+    )
+
+    rows = src.get_kline("2330.TW", "1m", limit=10)
+
+    assert [r["time"] for r in rows] == [t0]
 
 
 def test_invalid_symbol_returns_empty_without_request(sidecar_config):
@@ -373,7 +516,36 @@ def test_earliest_minute_is_first_of_latest_five_days(sidecar_config):
     })
 
     assert src.get_earliest_kline_time("6488.TWO", "15m") == first
-    assert session.calls[0]["params"] == {"symbol": "6488", "timeframe": "15"}
+    assert session.calls[0]["params"] == {"symbol": "6488", "timeframe": "1"}
+
+
+def test_earliest_minute_prefers_older_stored_bar(sidecar_config):
+    stored_first = _taipei_ts("2025-03-03 09:00")
+    sidecar_first = _taipei_ts("2025-10-24 09:00")
+    src, _ = _source(
+        {"/v1/stock/candles": lambda p: FakeResponse(200, _candles([(sidecar_first, 1, 1, 1, 1, 1)]))},
+        FakeStore([_bar(stored_first, 1)]),
+    )
+
+    assert src.get_earliest_kline_time("2330.TW", "1H") == stored_first
+
+
+def test_earliest_minute_uses_stored_bar_when_sidecar_is_down(sidecar_config):
+    stored_first = _taipei_ts("2025-03-03 09:00")
+    src, session = _source({}, FakeStore([_bar(stored_first, 1)]))
+    session.get = _raising_session(requests.ConnectionError("down"))  # type: ignore[method-assign]
+
+    assert src.get_earliest_kline_time("2330.TW", "1m") == stored_first
+
+
+def test_earliest_minute_ignores_database_failure(sidecar_config):
+    first = _taipei_ts("2025-10-24 09:00")
+    src, _ = _source(
+        {"/v1/stock/candles": lambda p: FakeResponse(200, _candles([(first, 1, 1, 1, 1, 1)]))},
+        FakeStore(error=RuntimeError("db down")),
+    )
+
+    assert src.get_earliest_kline_time("2330.TW", "5m") == first
 
 
 def test_earliest_unknown_when_sidecar_fails_or_symbol_invalid(sidecar_config):

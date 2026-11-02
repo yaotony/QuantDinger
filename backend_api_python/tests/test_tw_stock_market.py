@@ -18,6 +18,7 @@ from app.data_sources.factory import DataSourceFactory
 from app.data_sources.tw_stock import TWStockDataSource
 from app.markets.registry import MARKET_MODULES, list_market_modules
 from app.services.backtest_limits import (
+    _DEFAULT_LIMITS,
     backtest_range_limit_summary,
     backtest_range_policy,
 )
@@ -170,11 +171,13 @@ def test_trading_calendar_and_daily_cutoff_use_taipei():
 def test_backtest_range_policy():
     assert backtest_range_policy("TWStock", "1D").max_days == 365
     assert backtest_range_policy("TWStock", "1W").max_days == 365
+    # Minute / hourly history is accumulated in qd_tw_klines (#56): default limits.
     for tf in ("1m", "3m", "5m", "15m", "30m", "1H", "4H"):
-        assert backtest_range_policy("TWStock", tf).max_days == 5
+        assert backtest_range_policy("TWStock", tf) == _DEFAULT_LIMITS[tf]
     assert backtest_range_policy("tw", "1d").max_days == 365
     summary = backtest_range_limit_summary(["TWStock"])
     assert summary["markets"]["TWStock"]["1D"]["max_days"] == 365
+    assert set(summary["markets"]["TWStock"]) == {"1D", "1W"}
 
 
 def test_intraday_warmup_treats_twstock_as_stock_market():
@@ -198,7 +201,40 @@ def test_data_coverage_matches_backtest_rules():
 
     minute = describe_data_coverage(market="TWStock", symbol="IX0001", timeframe="5m",
                                     earliest_lookup=lambda **_: None)
-    assert minute["limits"]["max_days"] == 5
+    assert minute["limits"]["max_days"] == _DEFAULT_LIMITS["5m"].max_days
+
+
+class _StoreWithEarliest:
+    def __init__(self, earliest):
+        self.earliest = earliest
+
+    def earliest_bar_time(self, **_kwargs):
+        return self.earliest
+
+    def load_bars(self, **_kwargs):
+        return []
+
+
+def test_data_coverage_reports_stored_minute_history(monkeypatch):
+    stored_first = int(datetime(2025, 3, 3, 9, 0, tzinfo=TAIPEI).timestamp())
+    src = TWStockDataSource(kline_store=_StoreWithEarliest(stored_first))
+    monkeypatch.setattr(src, "fetch_minute_bars", lambda code, include_intraday=True: [
+        {"time": stored_first + 86400 * 200, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+    ])
+    monkeypatch.setitem(DataSourceFactory._sources, "TWStock", src)
+
+    coverage = describe_data_coverage(
+        market="TWStock", symbol="2330.TW", timeframe="5m",
+        start_date=datetime(2025, 3, 10), end_date=datetime(2025, 3, 20),
+    )
+
+    assert coverage["earliest_bar"]["timestamp"] == stored_first
+    assert coverage["evaluation"]["history_check"]["status"] == "ok"
+    early = describe_data_coverage(
+        market="TWStock", symbol="2330.TW", timeframe="5m",
+        start_date=datetime(2025, 2, 1), end_date=datetime(2025, 2, 20),
+    )
+    assert early["evaluation"]["history_check"]["status"] == "insufficient"
 
 
 def test_data_coverage_uses_source_earliest(monkeypatch):

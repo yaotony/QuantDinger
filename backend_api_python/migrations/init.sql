@@ -1581,6 +1581,45 @@ CREATE TABLE IF NOT EXISTS qd_perpetual_funding_rates (
     UNIQUE (exchange_id, symbol, funding_time)
 );
 
+-- Taiwan market K-lines accumulated from the Fubon sidecar (and TAIFEX imports).
+-- Market data, not tenant data. bar_time is the bar open instant in UTC.
+CREATE TABLE IF NOT EXISTS qd_tw_klines (
+    id BIGSERIAL PRIMARY KEY,
+    market VARCHAR(20) NOT NULL,
+    symbol VARCHAR(40) NOT NULL,
+    session VARCHAR(20) NOT NULL DEFAULT 'regular',
+    timeframe VARCHAR(10) NOT NULL,
+    bar_time TIMESTAMPTZ NOT NULL,
+    open DOUBLE PRECISION NOT NULL,
+    high DOUBLE PRECISION NOT NULL,
+    low DOUBLE PRECISION NOT NULL,
+    close DOUBLE PRECISION NOT NULL,
+    volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+    source VARCHAR(20) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_tw_klines_bar UNIQUE (market, symbol, session, timeframe, bar_time)
+);
+
+-- Daily Taiwan K-line collection status: success, failed (retried) or missed (gap).
+CREATE TABLE IF NOT EXISTS qd_tw_kline_collect_status (
+    id BIGSERIAL PRIMARY KEY,
+    market VARCHAR(20) NOT NULL,
+    symbol VARCHAR(40) NOT NULL,
+    session VARCHAR(20) NOT NULL,
+    trade_date DATE NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    bar_count INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_tw_kline_collect_status UNIQUE (market, symbol, session, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tw_kline_collect_status_date
+  ON qd_tw_kline_collect_status (trade_date);
+
 CREATE TABLE IF NOT EXISTS qd_portfolio_rebalance_plans (
     plan_id VARCHAR(36) PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,

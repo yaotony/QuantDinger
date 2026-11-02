@@ -82,17 +82,10 @@ _MARKET_LIMITS: Dict[str, Dict[str, BacktestRangePolicy]] = {
         "1D": BacktestRangePolicy(1095, "3 years", "forex daily data provider limit"),
         "1W": BacktestRangePolicy(1095, "3 years", "forex weekly data provider limit"),
     },
-    # The Fubon sidecar serves daily/weekly bars for at most one year and minute
-    # bars only for the latest 5 trading days. Keep these in sync with
-    # app.data_sources.tw_stock until locally stored history is available.
+    # The Fubon sidecar serves daily/weekly bars for at most one year. Minute and
+    # hourly bars come from the 1m history accumulated in qd_tw_klines, so they use
+    # the default engine limits; data-coverage reports how far back it reaches.
     "TWStock": {
-        "1m": BacktestRangePolicy(5, "5 days", "Taiwan stock minute data is limited to the latest 5 trading days"),
-        "3m": BacktestRangePolicy(5, "5 days", "Taiwan stock minute data is limited to the latest 5 trading days"),
-        "5m": BacktestRangePolicy(5, "5 days", "Taiwan stock minute data is limited to the latest 5 trading days"),
-        "15m": BacktestRangePolicy(5, "5 days", "Taiwan stock minute data is limited to the latest 5 trading days"),
-        "30m": BacktestRangePolicy(5, "5 days", "Taiwan stock minute data is limited to the latest 5 trading days"),
-        "1H": BacktestRangePolicy(5, "5 days", "Taiwan stock minute data is limited to the latest 5 trading days"),
-        "4H": BacktestRangePolicy(5, "5 days", "Taiwan stock minute data is limited to the latest 5 trading days"),
         "1D": BacktestRangePolicy(365, "1 year", "Taiwan stock daily data provider limit"),
         "1W": BacktestRangePolicy(365, "1 year", "Taiwan stock weekly data provider limit"),
     },

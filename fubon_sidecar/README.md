@@ -82,6 +82,40 @@ $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=regular'
 $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=afterhours'
 ```
 
+## 6. Daily K-line accumulation
+
+Fubon keeps stock minute bars for the latest 5 trading days and futures minute bars for the
+current session only. The backend's `celery-beat` therefore schedules
+`quantdinger.tasks.tw_kline_collect` (maintenance queue, every
+`TW_KLINE_COLLECT_INTERVAL_SEC`, default 600 s) to store each session's 1m bars in the
+PostgreSQL table `qd_tw_klines`:
+
+| Market | Session (`session`) | Collected after (Asia/Taipei) | Retried until |
+|---|---|---|---|
+| `TWStock` | `regular` | 14:00 on the trading day | 08:00 on the 3rd following trading day |
+| `TWFutures` | `regular` (day) | 13:50 on the trading day | 08:30 on the next trading day |
+| `TWFutures` | `afterhours` (night) | 05:10 the next morning | 08:30 on the next trading day |
+
+- Trading days come from the `exchange_calendars` `XTAI` calendar; non-trading days are never fetched.
+- Futures are stored per contract (`TXFH6`), for the near-month and next-month contracts by
+  `settlementDate`, never as a continuous code.
+- What to collect: `TW_KLINE_COLLECT_SYMBOLS` (`Market:Symbol` CSV, default
+  `TWStock:IX0001,TWStock:2330.TW,TWStock:0050.TW,TWFutures:TXF,TWFutures:MXF`) plus every
+  `TWStock` / `TWFutures` symbol on any user watchlist. `TW_KLINE_COLLECT_ENABLED=false` turns the
+  job off; it also skips itself while `FUBON_SIDECAR_TOKEN` is empty.
+- Each (symbol, session, trading day) outcome is written to `qd_tw_kline_collect_status`:
+  `success`, `failed` (retried by the next run) or `missed` (the retry window closed; logged as a
+  `TW K-line gap` warning). Find gaps with
+  `SELECT * FROM qd_tw_kline_collect_status WHERE status <> 'success' ORDER BY trade_date DESC;`
+- Writes are upserts on `(market, symbol, session, timeframe, bar_time)`, so reruns are idempotent.
+  A `fubon` bar is never replaced by a later `taifex` import of the same bar.
+
+**When the data starts:** minute history begins on the first trading day the job runs. The first
+run also stores whatever the latest-5-trading-days stock history still holds; earlier days are
+missing until the TAIFEX history import. Strategies read `TWStock` minute and hourly bars from the
+table first and fill the most recent days from the sidecar, and the backtest data-coverage answer
+reports the earliest stored bar.
+
 ## HTTP API (v1)
 
 Every request, including `/health`, must send `X-Sidecar-Token: <FUBON_SIDECAR_TOKEN>`;

@@ -97,3 +97,14 @@ def run_market_catalog_sync(self):
     from app.services.market_catalog_sync import run_market_catalog_sync_inline
 
     return run_market_catalog_sync_inline("celery-beat")
+
+
+@celery_app.task(
+    name="quantdinger.tasks.tw_kline_collect",
+    soft_time_limit=max(60, int(os.getenv("TW_KLINE_COLLECT_TIME_LIMIT_SEC", "540"))),
+)
+def run_tw_kline_collect():
+    """Store Taiwan 1m K-lines after each session; pending days are retried by the next tick."""
+    from app.services.tw_kline_collector import run_tw_kline_collection
+
+    return run_tw_kline_collection()
