@@ -1620,6 +1620,46 @@ CREATE TABLE IF NOT EXISTS qd_tw_kline_collect_status (
 CREATE INDEX IF NOT EXISTS idx_tw_kline_collect_status_date
   ON qd_tw_kline_collect_status (trade_date);
 
+-- TAIFEX option daily history (one row per day, expiry, strike, right and session).
+-- Market data, not tenant data. trade_date is the TAIFEX 交易日期 as published.
+CREATE TABLE IF NOT EXISTS qd_tw_option_daily (
+    id BIGSERIAL PRIMARY KEY,
+    trade_date DATE NOT NULL,
+    product VARCHAR(10) NOT NULL,
+    expiry VARCHAR(12) NOT NULL,
+    strike DOUBLE PRECISION NOT NULL,
+    option_right VARCHAR(4) NOT NULL,
+    session VARCHAR(20) NOT NULL DEFAULT 'regular',
+    symbol VARCHAR(40) NOT NULL DEFAULT '',
+    open DOUBLE PRECISION,
+    high DOUBLE PRECISION,
+    low DOUBLE PRECISION,
+    close DOUBLE PRECISION,
+    volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+    settlement_price DOUBLE PRECISION,
+    open_interest DOUBLE PRECISION,
+    source VARCHAR(20) NOT NULL DEFAULT 'taifex',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_tw_option_daily UNIQUE (trade_date, product, expiry, strike, option_right, session)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tw_option_daily_product_date
+  ON qd_tw_option_daily (product, session, trade_date);
+
+-- TAIFEX option final settlement price per product and contract month.
+CREATE TABLE IF NOT EXISTS qd_tw_option_settlement (
+    id BIGSERIAL PRIMARY KEY,
+    product VARCHAR(10) NOT NULL,
+    contract_month VARCHAR(12) NOT NULL,
+    settlement_date DATE NOT NULL,
+    final_settlement_price DOUBLE PRECISION NOT NULL,
+    source VARCHAR(20) NOT NULL DEFAULT 'taifex',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_tw_option_settlement UNIQUE (product, contract_month)
+);
+
 CREATE TABLE IF NOT EXISTS qd_portfolio_rebalance_plans (
     plan_id VARCHAR(36) PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,
