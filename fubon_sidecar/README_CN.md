@@ -75,6 +75,34 @@ $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=regular'
 $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=afterhours'
 ```
 
+## 6. 每日 K 線累積
+
+富邦的股票分 K 只保留近 5 個交易日、期貨分 K 只有當盤。因此後端的 `celery-beat` 會排程
+`quantdinger.tasks.tw_kline_collect`（maintenance queue，每 `TW_KLINE_COLLECT_INTERVAL_SEC`
+秒，預設 600 秒），把每個盤別的 1 分 K 寫進 PostgreSQL 的 `qd_tw_klines`：
+
+| 市場 | 盤別（`session`） | 何時開始抓（台北時間） | 失敗重試到 |
+|---|---|---|---|
+| `TWStock` | `regular` | 交易日 14:00 後 | 之後第 3 個交易日 08:00 |
+| `TWFutures` | `regular`（日盤） | 交易日 13:50 後 | 下一個交易日 08:30 |
+| `TWFutures` | `afterhours`（夜盤） | 隔天 05:10 後 | 下一個交易日 08:30 |
+
+- 交易日依 `exchange_calendars` 的 `XTAI` 判斷，非交易日不抓。
+- 期貨依合約存（例如 `TXFH6`），抓當時的近月與次月（依 `settlementDate`），不存連續代碼。
+- 累積清單：`TW_KLINE_COLLECT_SYMBOLS`（`Market:Symbol` 逗號分隔，預設
+  `TWStock:IX0001,TWStock:2330.TW,TWStock:0050.TW,TWFutures:TXF,TWFutures:MXF`），再加上所有使用者
+  watchlist 中的 `TWStock`／`TWFutures` 代碼。`TW_KLINE_COLLECT_ENABLED=false` 可關閉；
+  `FUBON_SIDECAR_TOKEN` 為空時工作會自動略過。
+- 每個（代碼、盤別、交易日）的結果寫在 `qd_tw_kline_collect_status`：`success`、`failed`
+  （下一次排程重抓）或 `missed`（重試期限已過，log 會出現 `TW K-line gap` warning）。查缺口：
+  `SELECT * FROM qd_tw_kline_collect_status WHERE status <> 'success' ORDER BY trade_date DESC;`
+- 寫入以 `(market, symbol, session, timeframe, bar_time)` upsert，重跑冪等；同一根 K 棒以 `fubon`
+  為準，之後匯入的 `taifex` 資料不會覆蓋它。
+
+**資料從哪一天開始有：** 分 K 歷史從這個工作第一次執行的交易日開始。第一次執行時也會一併存下股票近 5
+個交易日內仍可取得的資料；更早的日期要等期交所歷史匯入。策略讀取 `TWStock` 分 K／小時 K 時先讀這張表，
+最近幾天再由 sidecar 補齊；回測的 data-coverage 會回報表中最早的一根。
+
 ## HTTP 介面（v1）
 
 所有請求（含 `/health`）都必須帶 `X-Sidecar-Token: <FUBON_SIDECAR_TOKEN>`，否則回

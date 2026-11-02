@@ -12,17 +12,22 @@ Symbol format (QuantDinger identity -> sidecar code):
     IX0001 / IX0043     (TAIEX / TPEx index)       -> unchanged
 
 Timeframes:
-    1D / 1W          -> /v1/stock/candles  D / W (a from/to range of at most one year)
-    1m/5m/15m/30m/1H -> /v1/stock/candles  1/5/15/30/60 (latest 5 trading days only)
-    3m / 4H          -> resampled from 1m / 60m
+    1D / 1W        -> /v1/stock/candles  D / W (a from/to range of at most one year)
+    minute / 1H/4H -> 1m bars resampled to the requested interval. The 1m bars come
+                      from ``qd_tw_klines`` (accumulated daily by
+                      ``app.services.tw_kline_collector``) plus the sidecar's latest
+                      5 trading days and today's intraday bars; for the same bar
+                      time the sidecar bar wins, so the seam has no duplicates.
 
 Sidecar failures raise :class:`FubonSidecarError` with an operator-readable
 message; ``DataSourceFactory`` turns that into a structured market-data failure
-instead of an unhandled 500.
+instead of an unhandled 500. Minute requests fall back to the stored bars when
+the sidecar is down and the database has data for the window.
 """
 from __future__ import annotations
 
 import re
+import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -43,7 +48,18 @@ TOKEN_HEADER = "X-Sidecar-Token"
 # Fubon accepts a historical D/W range of at most one year per request.
 MAX_HISTORY_DAYS = 365
 
-# QuantDinger timeframe -> (sidecar timeframe, needs resampling)
+# The sidecar serves 1m bars for the latest 5 trading days only. Requests that end
+# earlier than this many calendar days ago (long holidays included) are served from
+# the database alone.
+SIDECAR_MINUTE_WINDOW_DAYS = 14
+
+# Stored bars: market / session / timeframe of the TWStock rows in qd_tw_klines.
+STORE_MARKET = "TWStock"
+STORE_SESSION = "regular"
+STORE_TIMEFRAME = "1m"
+
+# QuantDinger timeframe -> (native sidecar timeframe, not served natively by Fubon).
+# Only D / W are requested as-is; every intraday timeframe is resampled from 1m bars.
 TIMEFRAME_MAP: Dict[str, tuple[str, bool]] = {
     "1m": ("1", False),
     "3m": ("1", True),
@@ -116,9 +132,19 @@ class TWStockDataSource(BaseDataSource):
 
     name = "TWStock/fubon-sidecar"
 
-    def __init__(self) -> None:
+    def __init__(self, kline_store: Any = None) -> None:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "QuantDinger/TWStock-DataSource"})
+        self._kline_store = kline_store
+
+    @property
+    def kline_store(self) -> Any:
+        """``TWKlineRepository`` for stored 1m bars (created lazily)."""
+        if self._kline_store is None:
+            from app.services.tw_kline_store import TWKlineRepository
+
+            self._kline_store = TWKlineRepository()
+        return self._kline_store
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -269,7 +295,7 @@ class TWStockDataSource(BaseDataSource):
             return None
         return start_day, end_day
 
-    def _fetch_candles(
+    def _fetch_period_candles(
         self,
         code: str,
         timeframe: str,
@@ -278,39 +304,106 @@ class TWStockDataSource(BaseDataSource):
         after_time: Optional[int],
     ) -> List[Dict[str, Any]]:
         sidecar_tf, _ = TIMEFRAME_MAP[timeframe]
-        params: Dict[str, Any] = {"symbol": code, "timeframe": sidecar_tf}
-        if timeframe in PERIOD_TIMEFRAMES:
-            window = self._period_range(timeframe, limit, before_time, after_time)
-            if window is None:
-                return []
-            params["from"], params["to"] = window[0].isoformat(), window[1].isoformat()
-            return self._parse_candles(self._request("/v1/stock/candles", params))
+        window = self._period_range(timeframe, limit, before_time, after_time)
+        if window is None:
+            return []
+        params: Dict[str, Any] = {
+            "symbol": code,
+            "timeframe": sidecar_tf,
+            "from": window[0].isoformat(),
+            "to": window[1].isoformat(),
+        }
+        return self._parse_candles(self._request("/v1/stock/candles", params))
 
-        # Minute bars: Fubon returns only the latest 5 trading days and rejects from/to.
-        klines = self._parse_candles(self._request("/v1/stock/candles", params))
-        if before_time is None:
-            klines = self._merge_intraday(code, sidecar_tf, klines)
-        return klines
+    @staticmethod
+    def _merge_by_time(*sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Union bars by open time; later sources win for the same time."""
+        by_time: Dict[int, Dict[str, Any]] = {}
+        for rows in sources:
+            for row in rows:
+                by_time[int(row["time"])] = row
+        return [by_time[ts] for ts in sorted(by_time)]
 
-    def _merge_intraday(
-        self, code: str, sidecar_tf: str, klines: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Best-effort merge of today's intraday bars over the historical minute bars."""
+    def fetch_minute_bars(self, code: str, *, include_intraday: bool = True) -> List[Dict[str, Any]]:
+        """Sidecar 1m bars: the latest 5 trading days, plus today's intraday bars.
+
+        Fubon rejects from/to for minute bars. The intraday merge is best effort:
+        when only it fails, the historical bars are still returned.
+        """
+        klines = self._parse_candles(
+            self._request("/v1/stock/candles", {"symbol": code, "timeframe": "1"})
+        )
+        if not include_intraday:
+            return klines
         try:
             payload = self._request(
-                "/v1/stock/intraday/candles", {"symbol": code, "timeframe": sidecar_tf}
+                "/v1/stock/intraday/candles", {"symbol": code, "timeframe": "1"}
             )
         except FubonSidecarError as exc:
             if not klines:
                 raise
             logger.info("TWStock: intraday candles unavailable for %s: %s", code, exc)
             return klines
-        intraday = self._parse_candles(payload)
-        if not intraday:
-            return klines
-        by_time = {int(k["time"]): k for k in klines}
-        by_time.update({int(k["time"]): k for k in intraday})
-        return [by_time[ts] for ts in sorted(by_time)]
+        return self._merge_by_time(klines, self._parse_candles(payload))
+
+    def _stored_minutes(
+        self,
+        code: str,
+        *,
+        start_ts: Optional[int],
+        end_ts: Optional[int],
+        limit: Optional[int],
+    ) -> List[Dict[str, Any]]:
+        """Stored 1m bars; an unavailable database degrades to the sidecar only."""
+        try:
+            return self.kline_store.load_bars(
+                market=STORE_MARKET,
+                symbol=code,
+                session=STORE_SESSION,
+                timeframe=STORE_TIMEFRAME,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning("TWStock: stored 1m bars unavailable for %s: %s", code, exc)
+            return []
+
+    def _fetch_minute_candles(
+        self,
+        code: str,
+        timeframe: str,
+        limit: int,
+        before_time: Optional[int],
+        after_time: Optional[int],
+    ) -> List[Dict[str, Any]]:
+        """1m bars from the database and the sidecar, merged without duplicates."""
+        tf_minutes = max(1, TIMEFRAME_SECONDS[timeframe] // 60)
+        if after_time is not None:
+            stored = self._stored_minutes(code, start_ts=int(after_time), end_ts=before_time, limit=None)
+        else:
+            # Enough 1m bars for ``limit`` complete buckets plus one partial bucket.
+            stored = self._stored_minutes(
+                code, start_ts=None, end_ts=before_time, limit=(limit + 1) * tf_minutes
+            )
+
+        sidecar_reaches = (
+            before_time is None
+            or int(before_time) > time.time() - SIDECAR_MINUTE_WINDOW_DAYS * 86400
+        )
+        recent: List[Dict[str, Any]] = []
+        if sidecar_reaches:
+            try:
+                recent = self.fetch_minute_bars(code, include_intraday=before_time is None)
+            except FubonSidecarError as exc:
+                if not stored:
+                    raise
+                logger.warning(
+                    "TWStock: sidecar minute bars unavailable for %s, using stored bars only: %s",
+                    code,
+                    exc,
+                )
+        return self._merge_by_time(stored, recent)
 
     # ------------------------------------------------------------------ public
     def get_kline(
@@ -330,10 +423,12 @@ class TWStockDataSource(BaseDataSource):
             raise DataSourceError(f"TWStock does not support timeframe {timeframe!r} (unsupported timeframe).")
         lim = max(int(limit or 300), 1)
 
-        klines = self._fetch_candles(code, tf, lim, before_time, after_time)
-        _, needs_resample = TIMEFRAME_MAP[tf]
-        if needs_resample:
-            klines = self._resample(klines, TIMEFRAME_SECONDS[tf])
+        if tf in PERIOD_TIMEFRAMES:
+            klines = self._fetch_period_candles(code, tf, lim, before_time, after_time)
+        else:
+            klines = self._fetch_minute_candles(code, tf, lim, before_time, after_time)
+            if tf != "1m":
+                klines = self._resample(klines, TIMEFRAME_SECONDS[tf])
 
         klines = self.filter_and_limit(
             klines,
@@ -390,20 +485,48 @@ class TWStockDataSource(BaseDataSource):
         rows = (payload or {}).get("tickers") or []
         return [row for row in rows if isinstance(row, dict)]
 
+    # ------------------------------------------------------------------ futures / options
+    def get_futopt_tickers(self, ticker_type: str = "FUTURE") -> List[Dict[str, Any]]:
+        """Sidecar ``/v1/futopt/tickers`` rows (symbol, name, settlementDate, ...)."""
+        payload = self._request("/v1/futopt/tickers", {"type": ticker_type})
+        rows = (payload or {}).get("tickers") or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def fetch_futopt_minute_bars(self, contract: str, session: str) -> List[Dict[str, Any]]:
+        """Sidecar 1m bars of the current ``regular`` (day) or ``afterhours`` (night) session."""
+        payload = self._request(
+            "/v1/futopt/intraday/candles",
+            {"symbol": contract, "timeframe": "1", "session": session},
+        )
+        return self._parse_candles(payload)
+
     def get_earliest_kline_time(self, symbol: str, timeframe: str) -> Optional[int]:
-        """D/W: one year back from today (Fubon's range). Minute: first of the latest 5 days."""
+        """D/W: one year back from today (Fubon's range).
+
+        Minute / hourly: the earlier of the first stored 1m bar and the first
+        sidecar 1m bar (latest 5 trading days).
+        """
         code = self._normalize_symbol(symbol)
         tf = normalize_tw_timeframe(timeframe)
         if not code or tf is None:
             return None
         if tf in PERIOD_TIMEFRAMES:
             return _taipei_midnight_unix(_today_taipei() - timedelta(days=MAX_HISTORY_DAYS))
-        sidecar_tf, _ = TIMEFRAME_MAP[tf]
+        candidates: List[int] = []
         try:
-            klines = self._parse_candles(
-                self._request("/v1/stock/candles", {"symbol": code, "timeframe": sidecar_tf})
+            stored = self.kline_store.earliest_bar_time(
+                market=STORE_MARKET, symbol=code, session=STORE_SESSION, timeframe=STORE_TIMEFRAME
             )
+        except Exception as exc:
+            logger.warning("TWStock: stored earliest 1m bar unavailable for %s: %s", code, exc)
+            stored = None
+        if stored is not None:
+            candidates.append(int(stored))
+        try:
+            klines = self.fetch_minute_bars(code, include_intraday=False)
         except FubonSidecarError as exc:
             logger.info("TWStock earliest K-line lookup failed for %s: %s", code, exc)
-            return None
-        return int(klines[0]["time"]) if klines else None
+            klines = []
+        if klines:
+            candidates.append(int(klines[0]["time"]))
+        return min(candidates) if candidates else None
