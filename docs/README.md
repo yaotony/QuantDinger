@@ -150,6 +150,7 @@ ownership or shared state.
 - [Interactive Brokers](trading/IBKR_TRADING_GUIDE_EN.md)
 - Alpaca execution-fee reconciliation: [English](trading/ALPACA_FEE_RECONCILIATION.md) / [简体中文](trading/ALPACA_FEE_RECONCILIATION_CN.md)
 - [Live-trading safety](trading/LIVE_TRADING_SAFETY.md)
+- TAIFEX option history and offline option backtester (research only): [English](trading/TAIFEX_OPTIONS_BACKTEST.md) / [繁體中文](trading/TAIFEX_OPTIONS_BACKTEST_CN.md)
 - [Public universes and point-in-time fundamentals (Chinese)](trading/PUBLIC_UNIVERSE_AND_FUNDAMENTALS_CN.md)
 - [Fundamental-data preparation operations (Chinese)](strategies/FUNDAMENTAL_DATA_PREPARATION_CN.md)
 - Runnable examples in [`examples/`](examples/)
