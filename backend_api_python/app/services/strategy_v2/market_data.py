@@ -86,7 +86,7 @@ def _last_completed_bar_open(
 
 
 def _market_bar_cutoff(market: str, timeframe: str, *, now=None) -> pd.Timestamp:
-    if market in {"USStock", "HKStock", "TWStock"} and timeframe == "1d":
+    if market in {"USStock", "HKStock", "TWStock", "TWFutures"} and timeframe == "1d":
         from app.services.market_schedule import equity_daily_bar_cutoff
 
         return equity_daily_bar_cutoff(market, now)
@@ -240,8 +240,8 @@ def _load_strategy_frame_uncached(
             pass
         elif (
             effective_market == market and str(exchange_id or "").strip()
-        ) or effective_market == "TWStock":
-            # TWStock keeps the sidecar failure (e.g. sidecar not running)
+        ) or effective_market in {"TWStock", "TWFutures"}:
+            # Taiwan markets keep the sidecar failure (e.g. sidecar not running)
             # instead of collapsing it into a generic "no rows" error.
             rows, failure = DataSourceFactory.get_kline_with_diagnostics(**kwargs)
             if not rows and failure is not None:
@@ -641,7 +641,7 @@ def load_strategy_frame(
         actual_start = merged.index.min()
         actual_end = merged.index.max()
         incomplete_equity_daily = (
-            data_market in {"USStock", "HKStock", "TWStock"} and normalized_timeframe == "1d"
+            data_market in {"USStock", "HKStock", "TWStock", "TWFutures"} and normalized_timeframe == "1d"
             and live_request
             and equity_bar_session_date(actual_end, data_market) < equity_bar_session_date(coverage_end, data_market)
         )

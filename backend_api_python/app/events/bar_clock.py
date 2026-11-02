@@ -246,8 +246,12 @@ class MarketBarCloseClock:
 
 
 def supports_bar_close_events(frequency: str, candidates: list[dict[str, object]]) -> bool:
-    """Daily equity bars keep their calendar-aware completed-session policy."""
-    stock_markets = {"USStock", "HKStock", "AStock", "CNStock", "TWStock"}
+    """Daily equity bars keep their calendar-aware completed-session policy.
+
+    TWFutures intraday bars are gated by ``is_equity_bar_close``, which knows the
+    day session and the night session that crosses midnight.
+    """
+    stock_markets = {"USStock", "HKStock", "AStock", "CNStock", "TWStock", "TWFutures"}
     if any(
         str(item.get("api_family") or "").strip().lower() == "stock"
         and str(item.get("market") or "") == "Crypto"

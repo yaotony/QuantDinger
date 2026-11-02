@@ -998,6 +998,7 @@ def submit_backtest(
     source_id: int | None = None,
     source_version: int | None = None,
     funding_mode: str | None = None,
+    session: str | None = None,
 ) -> Any:
     """Submit a Strategy API V2 backtest; its manifest owns market data scope.
 
@@ -1013,6 +1014,10 @@ def submit_backtest(
     ``"historical_rates"`` to charge Binance USD-M perpetual funding on open
     swap positions; the result then reports funding per trade, in the summary,
     and lists missing funding periods under ``funding``.
+
+    ``session`` applies to ``TWFutures`` instruments only and is omitted by
+    default (``"all"``: day and night sessions, the night session counted in
+    the next trading day). Pass ``"regular"`` for the day session only.
 
     A range that exceeds the market/timeframe limit (warmup included) is
     rejected before a job is created: the gateway's 400 body, whose
@@ -1050,6 +1055,11 @@ def submit_backtest(
         if mode not in {"not_modeled", "historical_rates"}:
             raise ValueError("funding_mode must be 'not_modeled' or 'historical_rates'")
         payload["fundingMode"] = mode
+    if session:
+        value = str(session).strip().lower()
+        if value not in {"all", "regular"}:
+            raise ValueError("session must be 'all' or 'regular'")
+        payload["session"] = value
     headers = _idempotency_headers(idempotency_key)
     return _post("/api/agent/v1/backtest/run", json=payload, headers=headers)
 

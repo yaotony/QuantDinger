@@ -350,6 +350,12 @@
             "enum": ["not_modeled", "historical_rates"],
             "default": "not_modeled",
             "description": "Perpetual-swap funding simulation. not_modeled (default) keeps results unchanged. historical_rates charges stored Binance USD-M funding settlements (backfilled on demand) on open swap positions at each settlement bar close; missing settlements count as zero and are listed in result.funding.missingPeriods. Other exchanges are reported as not modeled."
+          },
+          "session": {
+            "type": "string",
+            "enum": ["all", "regular"],
+            "default": "all",
+            "description": "TWFutures trading sessions. all (default) uses the day session (08:45-13:45 Asia/Taipei) and the night session (15:00-05:00, counted in the next trading day); regular uses the day session only. Continuous codes such as TWFutures:TXF are stitched from the front month without price adjustment (result.executionAssumptions.twFutures.rollMethod == \"front_month_unadjusted\"). Ignored for other markets."
           }
         }
       },

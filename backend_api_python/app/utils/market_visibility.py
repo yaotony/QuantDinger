@@ -31,7 +31,7 @@ from typing import Any, Iterable, List, Set
 
 
 _KNOWN_MARKETS = frozenset({
-    'Crypto', 'USStock', 'CNStock', 'HKStock', 'Forex', 'Futures', 'MOEX', 'TWStock',
+    'Crypto', 'USStock', 'CNStock', 'HKStock', 'Forex', 'Futures', 'MOEX', 'TWStock', 'TWFutures',
 })
 
 

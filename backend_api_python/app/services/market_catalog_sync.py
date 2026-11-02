@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from app.services.symbol_master_sync import (
     fetch_crypto_symbols_with_diagnostics,
+    fetch_tw_futures_symbols,
     fetch_tw_stock_symbols,
     reclassify_stored_equity_products,
     upsert_symbol_master,
@@ -79,19 +80,27 @@ def _finish_run(run_id: int, status: str, result: dict) -> None:
             cur.close()
 
 
-def _sync_tw_stock_catalog() -> dict:
-    """Sync the optional TWStock catalog; an unavailable sidecar is skipped, not fatal."""
+def _sync_fubon_catalog(market: str, fetcher) -> dict:
+    """Sync one optional Taiwan catalog; an unavailable sidecar is skipped, not fatal."""
     from app.config.data_sources import FubonSidecarConfig
 
     if not FubonSidecarConfig.TOKEN:
         return {"ok": False, "skipped": True, "rows": 0, "reason": "sidecar_not_configured"}
     try:
-        rows = fetch_tw_stock_symbols()
+        rows = fetcher()
         written = upsert_symbol_master(rows) if rows else 0
         return {"ok": True, "rows": len(rows), "upserted": written}
     except Exception as exc:
-        logger.warning("TWStock catalog sync skipped, Fubon sidecar unavailable: %s", exc)
+        logger.warning("%s catalog sync skipped, Fubon sidecar unavailable: %s", market, exc)
         return {"ok": False, "skipped": True, "rows": 0, "error": str(exc)[:500]}
+
+
+def _sync_tw_stock_catalog() -> dict:
+    return _sync_fubon_catalog("TWStock", fetch_tw_stock_symbols)
+
+
+def _sync_tw_futures_catalog() -> dict:
+    return _sync_fubon_catalog("TWFutures", fetch_tw_futures_symbols)
 
 
 def _run_sync(run_id: int) -> None:
@@ -100,6 +109,7 @@ def _run_sync(run_id: int) -> None:
         written = upsert_symbol_master(rows) if rows else 0
         reclassified = reclassify_stored_equity_products()
         tw_stock = _sync_tw_stock_catalog()
+        tw_futures = _sync_tw_futures_catalog()
         succeeded = sum(1 for item in contexts if item.get("ok"))
         failed = len(contexts) - succeeded
         status = "success" if failed == 0 else ("partial" if succeeded else "failed")
@@ -113,6 +123,7 @@ def _run_sync(run_id: int) -> None:
             "contexts_failed": failed,
             "contexts": contexts,
             "tw_stock": tw_stock,
+            "tw_futures": tw_futures,
         })
         logger.info(
             "Market catalog sync finished status=%s rows=%s contexts=%s/%s",

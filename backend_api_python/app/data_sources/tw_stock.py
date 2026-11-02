@@ -448,6 +448,11 @@ class TWStockDataSource(BaseDataSource):
         payload = self._request("/v1/stock/quote", {"symbol": code})
         if not payload:
             return {"last": 0, "symbol": display}
+        return self._quote_to_ticker(payload, display)
+
+    @staticmethod
+    def _quote_to_ticker(payload: Dict[str, Any], display: str) -> Dict[str, Any]:
+        """Sidecar quote body -> the HK-style ticker shape the market routes expect."""
 
         def _num(key: str) -> float:
             try:

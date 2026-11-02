@@ -917,6 +917,64 @@ def fetch_tw_stock_symbols(source=None) -> List[SymbolMasterRow]:
     return _unique_rows(rows)
 
 
+# TWFutures catalog: every monthly contract of the sidecar FUTURE list (TXFH6)
+# plus one row per product (TXF, the continuous near month). Spreads (TXFK6/L6)
+# and anything not shaped like a monthly contract are dropped.
+_TW_FUTURES_NAME_SUFFIX_RE = re.compile(r"[\s\d/年月]+$")
+
+
+def _tw_futures_product_name(product: str, contract_name: str) -> str:
+    from app.data_sources.tw_futures_contracts import contract_spec
+
+    trimmed = _TW_FUTURES_NAME_SUFFIX_RE.sub("", contract_name).strip()
+    if trimmed and trimmed != contract_name:
+        return trimmed
+    spec = contract_spec(product)
+    return spec.name if spec else (trimmed or product)
+
+
+def fetch_tw_futures_symbols(source=None) -> List[SymbolMasterRow]:
+    """Fetch TAIFEX futures products and contract months from the Fubon sidecar.
+
+    Raises ``FubonSidecarError`` when the sidecar is not configured or not
+    reachable so callers can log a warning and skip the TWFutures catalog.
+    """
+    from app.data_sources.tw_futures_contracts import CONTRACT_RE, contract_spec
+    from app.data_sources.tw_stock import TWStockDataSource
+
+    source = source or TWStockDataSource()
+    products: Dict[str, SymbolMasterRow] = {}
+    contracts: List[SymbolMasterRow] = []
+    for raw in source.get_futopt_tickers("FUTURE"):
+        code = _clean_symbol(raw.get("symbol"))
+        name = _clean_text(raw.get("name")) or code
+        match = CONTRACT_RE.match(code)
+        if not match:
+            continue
+        product = match.group(1)
+        spec = contract_spec(product)
+        meta: Dict[str, object] = {"product": product}
+        for key in ("settlementDate", "endDate"):
+            if raw.get(key):
+                meta[key] = str(raw.get(key))[:10]
+        if spec is not None:
+            meta.update({"multiplier": spec.multiplier, "tickSize": spec.tick_size})
+        contracts.append(SymbolMasterRow(
+            "TWFutures", code, name, "TAIFEX", "TWD",
+            asset_class="futures", product_type="futures", api_family="futures",
+            product_meta=meta,
+        ))
+        if product not in products:
+            product_meta = {k: v for k, v in meta.items() if k not in ("settlementDate", "endDate")}
+            product_meta["continuous"] = True
+            products[product] = SymbolMasterRow(
+                "TWFutures", product, _tw_futures_product_name(product, name), "TAIFEX", "TWD",
+                asset_class="futures", product_type="futures", api_family="futures",
+                product_meta=product_meta,
+            )
+    return _unique_rows(list(products.values()) + contracts)
+
+
 FETCHERS = {
     "CNStock": fetch_cn_stock_symbols,
     "HKStock": fetch_hk_stock_symbols,
@@ -926,6 +984,7 @@ FETCHERS = {
     "Futures": fetch_futures_symbols,
     "MOEX": fetch_moex_symbols,
     "TWStock": fetch_tw_stock_symbols,
+    "TWFutures": fetch_tw_futures_symbols,
 }
 
 
@@ -942,6 +1001,9 @@ def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
                 "UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'Crypto' AND exchange = ? AND market_type = ?",
                 (exchange_id, market_type),
             )
+        if any(row.market == "TWFutures" for row in rows):
+            # Contract months expire; the upsert below re-activates the listed ones.
+            cur.execute("UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'TWFutures'")
         for row in rows:
             asset_class = row.asset_class or _default_asset_class(row.market, row.symbol)
             cur.execute(
@@ -1000,6 +1062,7 @@ def _default_asset_class(market: str, symbol: str = "") -> str:
         "Crypto": "crypto",
         "Forex": "forex",
         "Futures": "futures",
+        "TWFutures": "futures",
     }.get(str(market or ""), "equity")
 
 

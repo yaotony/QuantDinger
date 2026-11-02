@@ -12,7 +12,7 @@ could no longer be collected are visible as gaps.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 MARKET_STOCK = "TWStock"
 MARKET_FUTURES = "TWFutures"
@@ -172,6 +172,38 @@ class TWKlineRepository:
                 WHERE market = ? AND symbol = ? AND session = ? AND timeframe = ?
                 """,
                 (market, symbol, session, timeframe),
+            )
+            row = cur.fetchone()
+            cur.close()
+        value = (row or {}).get("earliest")
+        return _unix(value) if value is not None else None
+
+    def earliest_bar_time_like(
+        self,
+        *,
+        market: str,
+        symbol_pattern: str,
+        sessions: Sequence[str],
+        timeframe: str,
+    ) -> Optional[int]:
+        """Earliest bar of any symbol matching the SQL LIKE ``symbol_pattern`` in ``sessions``.
+
+        ``TXF__`` covers every stored monthly contract of a futures product.
+        """
+        from app.utils.db import get_db_connection
+
+        session_list = [str(item) for item in sessions if item]
+        if not session_list:
+            return None
+        placeholders = ", ".join("?" for _ in session_list)
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                f"""
+                SELECT MIN(bar_time) AS earliest FROM qd_tw_klines
+                WHERE market = ? AND symbol LIKE ? AND session IN ({placeholders}) AND timeframe = ?
+                """,
+                (market, symbol_pattern, *session_list, timeframe),
             )
             row = cur.fetchone()
             cur.close()

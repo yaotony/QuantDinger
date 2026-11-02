@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 # Kept here as a local constant to avoid importing a routes module from a
 # service module (circular-import hazard).
 _CACHEABLE_MARKETS = frozenset({
-    'Crypto', 'USStock', 'CNStock', 'HKStock', 'Forex', 'Futures', 'MOEX', 'TWStock',
+    'Crypto', 'USStock', 'CNStock', 'HKStock', 'Forex', 'Futures', 'MOEX', 'TWStock', 'TWFutures',
 })
 
 
@@ -161,6 +161,8 @@ def _normalize_symbol_for_market(market: str, symbol: str) -> str:
         return normalize_crypto_symbol(s)
     if m == 'TWStock' and s.startswith('TWSTOCK:'):
         return s.split(':', 1)[1].strip()
+    if m == 'TWFutures' and s.startswith('TWFUTURES:'):
+        return s.split(':', 1)[1].strip()
     return s
 
 
@@ -273,6 +275,14 @@ def resolve_symbol_name(market: str, symbol: str) -> Optional[str]:
         except Exception as e:
             logger.debug(f"TWStock name resolve failed: {symbol}: {e}")
         return s
+
+    # TWFutures: product and contract names come from the symbol master synced
+    # from the sidecar futures ticker list (step 1). Before the first sync, fall
+    # back to the built-in contract specification name.
+    if m == 'TWFutures':
+        from app.data_sources.tw_futures_contracts import contract_spec
+        spec = contract_spec(s[:3])
+        return spec.name if spec and len(s) == 3 else s
 
     # MOEX (Russian equities): try MOEX ISS securities description for a name.
     if m == 'MOEX':

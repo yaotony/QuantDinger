@@ -30,6 +30,7 @@ _MARKETS = [
     {"value": "CNStock",  "label": "China A-shares"},
     {"value": "HKStock",  "label": "HK Stocks"},
     {"value": "TWStock",  "label": "Taiwan Stocks"},
+    {"value": "TWFutures", "label": "Taiwan Futures"},
     {"value": "Crypto",   "label": "Crypto"},
     {"value": "Forex",    "label": "Forex"},
     {"value": "Futures",  "label": "Futures"},

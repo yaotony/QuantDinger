@@ -823,8 +823,44 @@ def _snapshot_payload(rules: Mapping[str, InstrumentRules], captured_at: str) ->
     ).encode("utf-8")
 
 
+def tw_futures_rules(symbol: str) -> InstrumentRules | None:
+    """Contract rules for ``TWFutures:TXF`` / ``TWFutures:TXFH6``.
+
+    Quantities are index units like every other instrument (``amount * price``
+    is the notional in TWD), so one contract is ``multiplier`` units:
+    ``amount_step == contract_size == multiplier`` makes P&L and percentage
+    commission follow the contract multiplier.
+    """
+    from app.data_sources.tw_futures_contracts import CONTRACT_RE, PRODUCT_RE, contract_spec
+
+    text = str(symbol or "").strip()
+    if not text.lower().startswith("twfutures:"):
+        return None
+    code = text.split(":", 1)[1].split("@", 1)[0].strip().upper()
+    match = CONTRACT_RE.match(code)
+    product = match.group(1) if match else code if PRODUCT_RE.match(code) else ""
+    spec = contract_spec(product)
+    if spec is None:
+        return None
+    return InstrumentRules(
+        key=str(symbol),
+        exchange_id="taifex",
+        market_type="futures",
+        symbol=code,
+        amount_step=spec.multiplier,
+        min_amount=spec.multiplier,
+        price_tick=spec.tick_size,
+        contract_size=spec.multiplier,
+        source="taifex_contract_spec",
+        captured_at="",
+    )
+
+
 def default_rules_for_symbol(symbol: str) -> InstrumentRules:
     """Non-network fallback used by low-level runner tests and non-crypto assets."""
+    futures = tw_futures_rules(symbol)
+    if futures is not None:
+        return futures
     is_crypto = str(symbol or "").startswith("Crypto:")
     return InstrumentRules(
         key=str(symbol),

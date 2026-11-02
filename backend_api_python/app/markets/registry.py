@@ -27,6 +27,7 @@ MARKET_ORDER = [
     "Futures",
     "MOEX",
     "TWStock",
+    "TWFutures",
 ]
 
 _RUNTIME_ENV_CACHE: Dict[str, str] = {}
@@ -228,6 +229,32 @@ MARKET_MODULES: Dict[str, MarketModule] = {
             ),
         ],
         supports={"spot": True, "swap": False, "short": False, "session": "exchange-hours"},
+    ),
+    "TWFutures": MarketModule(
+        key="TWFutures",
+        label="Taiwan Futures",
+        description=(
+            "TAIFEX index futures (TXF, MXF, TMF, EXF, FXF) as a continuous near-month "
+            "series or a single contract month, day and night sessions, via stored 1m "
+            "K-lines and the read-only Fubon market data sidecar. Live execution is not enabled."
+        ),
+        asset_class="futures",
+        symbol_hint="TXF",
+        base_currency="TWD",
+        features=["research", "backtest", "paper"],
+        data_requirements=[
+            DataRequirement(
+                key="fubon_sidecar",
+                label="Fubon market data sidecar",
+                setting_keys=["FUBON_SIDECAR_TOKEN"],
+                required=True,
+                purpose=(
+                    "quotes, contract list and the current session's 1m K-lines "
+                    "(FUBON_SIDECAR_URL defaults to http://fubon-marketdata:8010)"
+                ),
+            ),
+        ],
+        supports={"spot": False, "swap": False, "short": True, "session": "exchange-hours"},
     ),
 }
 
