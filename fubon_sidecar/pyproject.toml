@@ -1,0 +1,36 @@
+[project]
+name = "fubon-sidecar"
+version = "0.1.0"
+description = "Read-only Fubon Neo market data sidecar for QuantDinger (Taiwan stocks, indices, futures, options)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+# Installed only in the Docker image next to the fubon_neo wheel. fubon_neo 2.2.8
+# hard-codes "/v1.0" in its websocket base URL, which fugle-marketdata>=2.5.0 rejects
+# in base_url.with_version(), so the realtime client fails with TypeError.
+sdk = ["fugle-marketdata==2.4.1"]
+dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27", "pyyaml>=6"]
+
+[project.scripts]
+fubon-sidecar = "fubon_sidecar.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["fubon_sidecar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "W", "I"]

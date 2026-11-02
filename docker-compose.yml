@@ -378,6 +378,57 @@ services:
     networks:
       - quantdinger-network
 
+  # Optional read-only Fubon market data sidecar for Taiwan stocks, indices,
+  # futures and options. Disabled unless the `taiwan` profile is selected:
+  #   docker compose --profile taiwan up -d --build fubon-marketdata
+  # It needs the fubon_neo Linux x86_64 wheel in fubon_sidecar/vendor/ and the
+  # login certificate in FUBON_CERT_DIR (see fubon_sidecar/README.md). The
+  # image is linux/amd64 only; Apple Silicon runs it through Rosetta. No host
+  # port is published: only services on quantdinger-network can reach it, and
+  # every request must carry X-Sidecar-Token.
+  fubon-marketdata:
+    profiles: ["taiwan"]
+    platform: linux/amd64
+    build:
+      context: ./fubon_sidecar
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${FUBON_SIDECAR_BASE_IMAGE:-python:3.12-slim-bookworm}
+    image: ${FUBON_SIDECAR_LOCAL_IMAGE:-quantdinger-fubon-marketdata:local}
+    container_name: quantdinger-fubon-marketdata
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: ${CONTAINER_LOG_MAX_SIZE:-20m}
+        max-file: ${CONTAINER_LOG_MAX_FILES:-5}
+    expose:
+      - "8010"
+    environment:
+      TZ: Asia/Taipei
+      FUBON_ID: ${FUBON_ID:-}
+      FUBON_PASSWORD: ${FUBON_PASSWORD:-}
+      FUBON_API_KEY: ${FUBON_API_KEY:-}
+      FUBON_CERT_PATH: ${FUBON_CERT_PATH:-/run/fubon/cert.pfx}
+      FUBON_CERT_PASSWORD: ${FUBON_CERT_PASSWORD:-}
+      FUBON_SIDECAR_TOKEN: ${FUBON_SIDECAR_TOKEN:-}
+      FUBON_SIDECAR_PORT: "8010"
+      FUBON_REQUEST_TIMEOUT_SEC: ${FUBON_REQUEST_TIMEOUT_SEC:-10}
+      FUBON_RATE_LIMIT_PER_SEC: ${FUBON_RATE_LIMIT_PER_SEC:-5}
+    volumes:
+      - ${FUBON_CERT_DIR:-./fubon_sidecar/certs}:/run/fubon:ro
+    networks:
+      - quantdinger-network
+    healthcheck:
+      test: ["CMD", "python", "-m", "fubon_sidecar.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   trading-worker:
     <<: *backend-runtime
     build: *backend-build
