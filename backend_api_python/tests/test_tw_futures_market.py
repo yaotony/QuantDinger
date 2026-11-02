@@ -428,7 +428,11 @@ def test_backtest_regular_session_skips_the_night_and_differs():
 
 
 def test_backtest_rejects_a_partial_contract():
-    code = _HOLD_STRATEGY.replace("order(g.symbol, 200,", "order(g.symbol, 100,")
+    # Half a TXF contract each way: both orders round down to zero contracts.
+    code = _HOLD_STRATEGY.replace("order(g.symbol, 200,", "order(g.symbol, 100,").replace(
+        "order(g.symbol, -200,", "order(g.symbol, -100,"
+    )
+    assert "200" not in code.split("def handle_data", 1)[1]
     _, result = _service([]).run(
         user_id=1, code=code, start_date=datetime(2026, 3, 2), end_date=datetime(2026, 3, 3, 23, 59, 59),
         initial_capital=10_000_000, commission=0, slippage=0, persist=False,
