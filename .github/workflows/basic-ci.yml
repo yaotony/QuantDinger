@@ -202,6 +202,9 @@ jobs:
       - name: Validate local compose
         run: docker compose -f docker-compose.yml config -q
 
+      - name: Validate local compose with the Taiwan profile
+        run: docker compose -f docker-compose.yml --profile taiwan config -q
+
       - name: Validate GHCR compose
         run: docker compose -f docker-compose.ghcr.yml config -q
 

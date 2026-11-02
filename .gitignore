@@ -99,6 +99,13 @@ mcp_server/dist/
 mcp_server/build/
 mcp_server/.smoketest/
 mcp_server/src/quantdinger_mcp.egg-info/
+
+# Fubon market data sidecar: the proprietary SDK wheel and login certificates are
+# supplied by the owner locally and must never be committed.
+fubon_sidecar/vendor/*
+!fubon_sidecar/vendor/.gitkeep
+fubon_sidecar/certs/*
+!fubon_sidecar/certs/.gitkeep
 backend_api_python/data/quantdinger.db
 backend_api_python/data/memory/
 
