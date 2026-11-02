@@ -14,9 +14,10 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 VALID_MARKETS = frozenset({
-    "Crypto", "USStock", "CNStock", "HKStock", "Forex", "Futures", "MOEX",
+    "Crypto", "USStock", "CNStock", "HKStock", "Forex", "Futures", "MOEX", "TWStock",
 })
 CN_A_SHARE_PATTERN = re.compile(r"^\d{6}$")
+TW_STOCK_PATTERN = re.compile(r"^(\d{4}[0-9A-Z]{0,2}\.TWO?|IX\d{4})$")
 
 _name_resolve_executor = ThreadPoolExecutor(
     max_workers=4,
@@ -38,6 +39,13 @@ def validate_watchlist_pair(market: str, symbol: str) -> Optional[str]:
         return f"Symbol '{symbol}' looks like a Chinese A-share code; market must be CNStock, not {market}"
     if symbol.endswith(".HK") and market != "HKStock":
         return f"Symbol '{symbol}' looks like a Hong Kong stock; market must be HKStock, not {market}"
+    if symbol.upper().endswith((".TW", ".TWO")) and market != "TWStock":
+        return f"Symbol '{symbol}' looks like a Taiwan stock; market must be TWStock, not {market}"
+    if market == "TWStock" and not TW_STOCK_PATTERN.match(symbol.upper()):
+        return (
+            f"Taiwan symbol '{symbol}' must be 2330.TW (TWSE), 6488.TWO (TPEx) "
+            "or an index such as IX0001."
+        )
     if market == "Crypto" and "/" not in symbol:
         return f"Crypto symbol '{symbol}' must be a BASE/QUOTE pair (e.g. BTC/USDT)."
     return None

@@ -191,6 +191,11 @@ def load_addon_config() -> Dict[str, Any]:
         ('TIINGO_TIMEOUT', 'tiingo.timeout', 'int'),
         ('TWELVE_DATA_API_KEY', 'twelve_data.api_key', 'string'),
 
+        # Fubon market data sidecar (TWStock)
+        ('FUBON_SIDECAR_URL', 'fubon_sidecar.base_url', 'string'),
+        ('FUBON_SIDECAR_TOKEN', 'fubon_sidecar.token', 'string'),
+        ('FUBON_SIDECAR_TIMEOUT', 'fubon_sidecar.timeout', 'float'),
+
         # Search (Google CSE / Bing)
         ('SEARCH_PROVIDER', 'search.provider', 'string'),
         ('SEARCH_MAX_RESULTS', 'search.max_results', 'int'),

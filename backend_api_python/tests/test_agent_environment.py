@@ -123,8 +123,8 @@ def test_range_limits_follow_backtest_policy_and_market_allowlist():
     for timeframe, item in summary["markets"]["USStock"].items():
         assert item["max_days"] == backtest_range_policy("USStock", timeframe).max_days
 
-    assert set(backtest_range_limit_summary(None)["markets"]) == {"USStock", "Forex"}
-    assert set(backtest_range_limit_summary(["*"])["markets"]) == {"USStock", "Forex"}
+    assert set(backtest_range_limit_summary(None)["markets"]) == {"USStock", "Forex", "TWStock"}
+    assert set(backtest_range_limit_summary(["*"])["markets"]) == {"USStock", "Forex", "TWStock"}
 
 
 def test_worst_status_treats_unknown_as_fail():

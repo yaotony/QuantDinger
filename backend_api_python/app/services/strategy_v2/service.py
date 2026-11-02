@@ -1092,13 +1092,17 @@ def _validate_warmup_history(frequency_frames, warmup_bars: int, start_date: dat
     validate_warmup(frequency_frames, warmup_bars, start_date)
 
 
+# Session-bound stock markets: intraday warmup needs extra calendar days.
+_SESSION_STOCK_MARKETS = frozenset({"USStock", "HKStock", "AStock", "TWStock"})
+
+
 def _warmup_calendar_days(frequency: str, warmup_bars: int, candidates=()) -> int:
     """Keep the legacy helper available for internal callers and tests."""
     days = backtest_warmup_calendar_days(frequency, warmup_bars)
     normalized = str(frequency).lower()
     if warmup_bars > 0 and normalized.endswith(("m", "h")) and any(
-        item.get("market") in {"USStock", "HKStock", "AStock"}
-        or str(item.get("underlying_market") or "") in {"USStock", "HKStock", "AStock"}
+        item.get("market") in _SESSION_STOCK_MARKETS
+        or str(item.get("underlying_market") or "") in _SESSION_STOCK_MARKETS
         or str(item.get("product_type") or "").strip().lower() == "direct_equity"
         for item in candidates
     ):

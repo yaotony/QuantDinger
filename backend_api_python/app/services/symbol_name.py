@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 # Kept here as a local constant to avoid importing a routes module from a
 # service module (circular-import hazard).
 _CACHEABLE_MARKETS = frozenset({
-    'Crypto', 'USStock', 'CNStock', 'HKStock', 'Forex', 'Futures', 'MOEX',
+    'Crypto', 'USStock', 'CNStock', 'HKStock', 'Forex', 'Futures', 'MOEX', 'TWStock',
 })
 
 
@@ -255,6 +255,19 @@ def resolve_symbol_name(market: str, symbol: str) -> Optional[str]:
         if ext:
             persist_seed_name(m, s, ext)
         return ext
+
+    # TWStock (Taiwan): the Fubon sidecar quote carries the listed short name.
+    if m == 'TWStock':
+        try:
+            from app.data_sources.factory import DataSourceFactory
+            quote = DataSourceFactory.get_source('TWStock').get_ticker(s)
+            ext = str((quote or {}).get('name') or '').strip()
+            if ext:
+                persist_seed_name(m, s, ext)
+                return ext
+        except Exception as e:
+            logger.debug(f"TWStock name resolve failed: {symbol}: {e}")
+        return s
 
     # MOEX (Russian equities): try MOEX ISS securities description for a name.
     if m == 'MOEX':

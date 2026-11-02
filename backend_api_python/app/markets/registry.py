@@ -26,6 +26,7 @@ MARKET_ORDER = [
     "Forex",
     "Futures",
     "MOEX",
+    "TWStock",
 ]
 
 _RUNTIME_ENV_CACHE: Dict[str, str] = {}
@@ -204,6 +205,28 @@ MARKET_MODULES: Dict[str, MarketModule] = {
         base_currency="RUB",
         features=["research", "paper"],
         data_requirements=[],
+        supports={"spot": True, "swap": False, "short": False, "session": "exchange-hours"},
+    ),
+    "TWStock": MarketModule(
+        key="TWStock",
+        label="Taiwan Stocks",
+        description=(
+            "Taiwan listed (TWSE) and OTC (TPEx) stocks, ETFs and indices via the "
+            "read-only Fubon market data sidecar. Live execution is not enabled."
+        ),
+        asset_class="equity",
+        symbol_hint="2330.TW",
+        base_currency="TWD",
+        features=["research", "backtest", "paper"],
+        data_requirements=[
+            DataRequirement(
+                key="fubon_sidecar",
+                label="Fubon market data sidecar",
+                setting_keys=["FUBON_SIDECAR_TOKEN"],
+                required=True,
+                purpose="quotes and OHLCV (FUBON_SIDECAR_URL defaults to http://fubon-marketdata:8010)",
+            ),
+        ],
         supports={"spot": True, "swap": False, "short": False, "session": "exchange-hours"},
     ),
 }

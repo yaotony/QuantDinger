@@ -111,6 +111,7 @@ ADVANCED_KEYS = {
     'TRADING_ECONOMICS_CLIENT', 'TRADING_ECONOMICS_KEY',
     'COINGLASS_API_KEY', 'CRYPTOQUANT_API_KEY', 'TIINGO_API_KEY',
     'TWELVE_DATA_API_KEY', 'ADANOS_API_KEY',
+    'FUBON_SIDECAR_URL', 'FUBON_SIDECAR_TOKEN', 'FUBON_SIDECAR_TIMEOUT',
     # Agent gateway (operator-level)
     'AGENT_JOBS_MAX_WORKERS',
     'QUANTDINGER_DEPLOYMENT_MODE', 'AI_ENSEMBLE_MODELS',
@@ -1117,6 +1118,27 @@ CONFIG_SCHEMA = {
                 'link': 'https://twelvedata.com/apikey',
                 'link_text': 'settings.link.getApiKey',
                 'description': 'Twelve Data API key for CN/HK stock K-lines (free 800 credits/day)'
+            },
+            {
+                'key': 'FUBON_SIDECAR_URL',
+                'label': 'Fubon Sidecar URL',
+                'type': 'text',
+                'default': 'http://fubon-marketdata:8010',
+                'description': 'Address of the read-only Fubon market data sidecar that serves the TWStock market (Taiwan stocks and indices).'
+            },
+            {
+                'key': 'FUBON_SIDECAR_TOKEN',
+                'label': 'Fubon Sidecar Token',
+                'type': 'password',
+                'required': False,
+                'description': 'Shared X-Sidecar-Token for the Fubon sidecar. Must match the token the sidecar container was started with.'
+            },
+            {
+                'key': 'FUBON_SIDECAR_TIMEOUT',
+                'label': 'Fubon Sidecar Timeout (sec)',
+                'type': 'number',
+                'default': '15',
+                'description': 'Timeout for one TWStock request to the Fubon sidecar.'
             },
             {
                 'key': 'ADANOS_API_KEY',

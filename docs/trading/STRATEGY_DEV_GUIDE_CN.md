@@ -159,10 +159,15 @@ Content-Type: application/json
 | 外汇 | <code>Forex:EUR/USD</code> |
 | 期货 | <code>Futures:ES</code> |
 | 莫斯科交易所 | <code>MOEX:SBER</code> |
+| 台湾上市（TWSE）股票／ETF | <code>TWStock:2330.TW</code>、<code>TWStock:0050.TW</code> |
+| 台湾上柜（TPEx）股票 | <code>TWStock:6488.TWO</code> |
+| 台湾指数 | <code>TWStock:IX0001</code>（加权指数）、<code>TWStock:IX0043</code>（柜买指数） |
 
-系统也会规范化部分别名，例如 <code>600519.XSHG</code> → <code>CNStock:600519.SH</code>、<code>BTCUSDT</code> → <code>BTC/USDT</code>。
+系统也会规范化部分别名，例如 <code>600519.XSHG</code> → <code>CNStock:600519.SH</code>、<code>BTCUSDT</code> → <code>BTC/USDT</code>。没有市场前缀时，以 <code>.TW</code>／<code>.TWO</code> 结尾的代码与 <code>IX</code> 指数代码会被推断为 <code>TWStock</code>。
 
-券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code> 和 <code>MOEX</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。只有通过交易所路由的 <code>Crypto</code> 身份才携带 <code>@venue:market_type</code> 后缀。
+<code>TWStock</code> 数据来自只读的富邦行情 sidecar，只支持研究、回测与模拟盘，实盘策略会被拒绝。日／周 K 回测区间最长 1 年，分 K 回测最长 5 天（含指标预热）。
+
+券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code>、<code>MOEX</code> 和 <code>TWStock</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。只有通过交易所路由的 <code>Crypto</code> 身份才携带 <code>@venue:market_type</code> 后缀。
 
 为避免歧义，生产策略应写完整市场前缀。Crypto 未写市场类型时默认为 spot。只有 swap 可以启用合约杠杆。能够解析市场名称并不代表一定有数据或支持实盘，实盘支持范围见第 18 节。
 

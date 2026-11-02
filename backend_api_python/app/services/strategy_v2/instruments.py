@@ -19,7 +19,10 @@ _MARKETS = {
     "forex": "Forex",
     "futures": "Futures",
     "moex": "MOEX",
+    "twstock": "TWStock",
 }
+_TW_SUFFIX_ALIASES = {".TWSE": ".TW", ".TPEX": ".TWO"}
+_TW_INDEX_RE = re.compile(r"IX\d{4}")
 _CRYPTO_MARKET_TYPES = {"spot", "swap"}
 
 
@@ -98,6 +101,9 @@ def infer_market(symbol: str) -> str:
         return "Crypto"
     if value.endswith(".HK") or value.endswith(".XHKG"):
         return "HKStock"
+    # Taiwan: must run before the USStock ticker pattern, which also matches IX0001.
+    if value.endswith((".TW", ".TWO")) or _TW_INDEX_RE.fullmatch(value):
+        return "TWStock"
     if value.endswith((".SH", ".SZ", ".BJ", ".XSHG", ".XSHE", ".XBJS")):
         return "CNStock"
     if re.fullmatch(r"\d{6}", value):
@@ -145,6 +151,7 @@ def _normalize_symbol(value: object) -> str:
         ".XSHE": ".SZ",
         ".XBJS": ".BJ",
         ".XHKG": ".HK",
+        **_TW_SUFFIX_ALIASES,
     }
     for old, new in replacements.items():
         if raw.endswith(old):
