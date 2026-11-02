@@ -236,7 +236,9 @@ MARKET_MODULES: Dict[str, MarketModule] = {
         description=(
             "TAIFEX index futures (TXF, MXF, TMF, EXF, FXF) as a continuous near-month "
             "series or a single contract month, day and night sessions, via stored 1m "
-            "K-lines and the read-only Fubon market data sidecar. Live execution is not enabled."
+            "K-lines and the read-only Fubon market data sidecar. TAIFEX options (TXO, weekly "
+            "TX1/TX2/TX4/TX5) are market data only: no backtests or paper trading. "
+            "Live execution is not enabled."
         ),
         asset_class="futures",
         symbol_hint="TXF",

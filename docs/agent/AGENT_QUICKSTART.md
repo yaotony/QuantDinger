@@ -80,6 +80,8 @@ The submission checks the date range plus indicator warmup against the market an
 
 To check a range before submitting, call `GET /api/agent/v1/data-coverage` (R scope; MCP `get_data_coverage`) with `market`, `symbol`, `timeframe`, and optionally `start_date`, `end_date`, and `warmup_bars`. It returns the earliest available bar (`unknown` when the data source cannot report it), the range limit including warmup, and whether the range is feasible with suggested dates, using the same rule as the submission check.
 
+TAIFEX options are market data only. Read a chain with `GET /api/agent/v1/option-chain?product=TXO&expiry_month=2026-08` (R scope; MCP `get_option_chain`): it returns call and put quotes per strike, centred on the TAIEX price (`strikes` 1-25, default 10; `center` to pick another strike). Weekly products are `TX1`/`TX2`/`TX4`/`TX5`. Contract codes such as `TXO23000H6` (calls use month letters A-L, puts M-X) also work with `/klines` and `/price` under market `TWFutures`. A backtest or deployment whose strategy names an option contract returns HTTP 400 with `message: "strategyV2.optionsBacktestUnsupported"`, because the engine does not model premiums, expiry, exercise, or margin.
+
 For the full design-and-iterate loop, backtest range limits, and error handling, see [Agent strategy design and backtest iteration](AGENT_STRATEGY_ITERATION.md).
 
 Successful backtests also save a standard Backtest Center history record for the

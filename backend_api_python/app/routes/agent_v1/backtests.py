@@ -10,6 +10,8 @@ from typing import Any
 
 from app.data_sources.tw_futures import SESSIONS as TW_FUTURES_SESSIONS
 from app.data_sources.tw_futures import normalize_session as normalize_tw_futures_session
+from app.data_sources.tw_options import OPTIONS_UNSUPPORTED_ERROR as TW_OPTIONS_UNSUPPORTED_ERROR
+from app.data_sources.tw_options import first_option_instrument
 from app.services.backtest_jobs import parse_backtest_date, run_backtest_job
 from app.services.backtest_limits import BacktestRangeLimitError
 from app.services.billing_service import BillingError
@@ -197,6 +199,11 @@ def _validate_code(body: dict, code: str) -> tuple[Any, Any]:
             return None, error(403, f"Market not allowed: {market}", http=403)
         if symbol and not instrument_allowed(symbol):
             return None, error(403, f"Instrument not allowed: {symbol}", http=403)
+
+    option = first_option_instrument(instruments)
+    if option:
+        # Quotes and K-lines only: the engine models no premium, expiry, exercise or margin.
+        return None, error(400, TW_OPTIONS_UNSUPPORTED_ERROR, details={"instrument": option})
 
     universe = metadata.get("universe") or {}
     dynamic_references = [str(universe.get("reference") or "").strip()]

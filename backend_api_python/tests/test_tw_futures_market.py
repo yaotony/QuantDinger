@@ -234,6 +234,8 @@ def test_unknown_products_keep_engine_defaults():
 
 class _FuturesTickers:
     def get_futopt_tickers(self, ticker_type="FUTURE"):
+        if ticker_type == "OPTION":
+            return []  # option rows are covered by test_tw_options.py
         assert ticker_type == "FUTURE"
         return [
             {"symbol": "TXFK6", "name": "臺股期貨115/11", "settlementDate": "2026-11-18"},

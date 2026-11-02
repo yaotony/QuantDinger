@@ -38,6 +38,7 @@ MCP_TOOL_NAMES = (
     "get_klines",
     "get_data_coverage",
     "get_price",
+    "get_option_chain",
     "list_strategies",
     "get_strategy",
     "runtime_overview",
@@ -520,6 +521,36 @@ def get_data_coverage(
 def get_price(market: str, symbol: str) -> Any:
     """Latest price for a symbol."""
     return _get("/api/agent/v1/price", params={"market": market, "symbol": symbol})
+
+
+@_tool
+def get_option_chain(
+    product: str = "TXO",
+    expiry_month: str | None = None,
+    strikes: int = 10,
+    center: float | None = None,
+) -> Any:
+    """TAIFEX option chain: call and put quotes per strike (market data only).
+
+    ``product`` is a TWFutures option product such as ``TXO`` (monthly) or a
+    weekly ``TX1``/``TX2``/``TX4``/``TX5``. ``expiry_month`` is ``YYYY-MM``
+    (default: the nearest unexpired series). ``strikes`` (1-25) strikes nearest
+    to ``center`` (default: the underlying TAIEX price) are quoted.
+
+    Contract codes such as ``TXO23000H6`` (calls use month letters A-L, puts
+    M-X) also work with ``get_klines`` and ``get_price`` under market
+    ``TWFutures``. Options cannot be backtested or deployed: a strategy that
+    names one is rejected with ``strategyV2.optionsBacktestUnsupported``.
+    """
+    params: dict[str, Any] = {
+        "product": str(product or "").strip().upper(),
+        "strikes": max(1, min(25, int(strikes))),
+    }
+    if expiry_month:
+        params["expiry_month"] = str(expiry_month).strip()
+    if center is not None:
+        params["center"] = float(center)
+    return _get("/api/agent/v1/option-chain", params=params)
 
 
 @_tool

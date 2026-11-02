@@ -30,7 +30,7 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 66
+    assert len(fresh_module.MCP_TOOL_NAMES) == 67
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
@@ -577,6 +577,37 @@ def test_submit_backtest_forwards_funding_mode_only_when_set(monkeypatch, fresh_
     assert captured[1]["fundingMode"] == "historical_rates"
     with pytest.raises(ValueError, match="funding_mode"):
         fresh_module.submit_backtest(code, "2024-01-01", "2024-06-30", funding_mode="fixed")
+
+
+def test_get_option_chain_forwards_query_and_is_read_only(monkeypatch, fresh_module):
+    from quantdinger_mcp.tool_contract import WRITE_TOOLS
+
+    seen = []
+
+    def respond(request):
+        seen.append((request.method, request.url.path, dict(request.url.params)))
+        return httpx.Response(200, json={"code": 0, "message": "ok", "data": {
+            "product": "TXO", "expiryMonth": "2026-11", "backtestSupported": False,
+            "strikes": [{"strike": 23000,
+                         "call": {"symbol": "TXO23000K6", "available": True, "lastPrice": 310.0},
+                         "put": {"symbol": "TXO23000W6", "available": True, "lastPrice": 95.0}}],
+        }})
+
+    with httpx.Client(base_url="http://fixture.test", transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(fresh_module, "_client", client)
+        out = fresh_module.get_option_chain("txo", expiry_month="2026-11", strikes=99, center=23000)
+        fresh_module.get_option_chain()
+
+    assert seen[0] == ("GET", "/api/agent/v1/option-chain", {
+        "product": "TXO", "expiry_month": "2026-11", "strikes": "25", "center": "23000.0",
+    })
+    assert seen[1] == ("GET", "/api/agent/v1/option-chain", {"product": "TXO", "strikes": "10"})
+    assert out["strikes"][0]["put"]["symbol"] == "TXO23000W6"
+    assert out["backtestSupported"] is False
+
+    assert "get_option_chain" not in WRITE_TOOLS
+    tools = {tool.name: tool for tool in asyncio.run(fresh_module.mcp.list_tools())}
+    assert tools["get_option_chain"].annotations.readOnlyHint is True
 
 
 def test_submit_backtest_forwards_tw_futures_session_only_when_set(monkeypatch, fresh_module):

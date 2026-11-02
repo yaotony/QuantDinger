@@ -283,6 +283,22 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
         priority=93,
     ),
     ToolDefinition(
+        id="mcp.get_option_chain",
+        category="market",
+        label_zh="读取台指选择权链",
+        label_en="Get option chain",
+        description_zh="读取期交所选择权（TXO、周选）某到期月份各履约价的买权与卖权报价；只提供行情，不能回测或部署。",
+        description_en=(
+            "Read call and put quotes per strike for a TAIFEX option product (TXO, weekly "
+            "TX1/TX2/TX4/TX5) and expiry month; market data only, not backtestable or deployable."
+        ),
+        route="/api/agent/v1/option-chain",
+        requires=("product",),
+        produces=("option_chain",),
+        risk_level="read",
+        priority=92,
+    ),
+    ToolDefinition(
         id="mcp.list_strategies",
         category="strategy",
         label_zh="列出策略",

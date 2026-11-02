@@ -43,6 +43,9 @@ class _Tickers:
         self.rows = rows
 
     def get_futopt_tickers(self, ticker_type="FUTURE"):
+        # The futures fixtures carry no option listing.
+        if ticker_type == "OPTION":
+            return []
         assert ticker_type == "FUTURE"
         return [dict(row) for row in self.rows]
 
@@ -228,7 +231,11 @@ def test_upsert_deactivates_unlisted_contracts_and_writes_aliases(monkeypatch):
 
     assert written == len(rows)
     assert connection.committed
-    assert statements[0][0] == "UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'TWFutures'"
+    # Deactivation is scoped to the synced product type so options stay listed.
+    assert statements[0] == (
+        "UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'TWFutures' AND product_type = ?",
+        ("futures",),
+    )
     upserted = [params[1] for sql, params in statements if sql.startswith("INSERT INTO qd_market_symbols ")]
     assert upserted == [row.symbol for row in rows]
     assert "TXFJ6" not in upserted

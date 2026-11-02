@@ -323,6 +323,51 @@ def test_agent_openapi_documents_data_coverage_contract():
         assert f'request.args.get("{name}")' in route_source, name
 
 
+def test_agent_openapi_documents_option_chain_contract():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services.tw_option_chain import MAX_STRIKES, TWOptionChainService
+
+    class Source:
+        def get_futopt_tickers(self, ticker_type):
+            return [{"symbol": "TXO23000K6", "settlementDate": "2026-11-18"},
+                    {"symbol": "TXO23000W6", "settlementDate": "2026-11-18"}]
+
+        def _request(self, path, params):
+            if path == "/v1/stock/quote":
+                return {"lastPrice": 23000.0}
+            return {"symbol": params["symbol"], "lastPrice": 100.0}
+
+    now = datetime(2026, 11, 2, 10, tzinfo=ZoneInfo("Asia/Taipei")).timestamp()
+    chain = TWOptionChainService(Source(), clock=lambda: now, quote_workers=1).get_chain("TXO")
+
+    spec = json.loads(
+        (BACKEND_ROOT / "docs" / "agent" / "agent-openapi.json").read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    schema = schemas["OptionChain"]
+    assert set(schema["properties"]) == set(chain) == set(schema["required"])
+    assert set(schema["properties"]["underlying"]["properties"]) == set(chain["underlying"])
+    row = chain["strikes"][0]
+    assert set(schema["properties"]["strikes"]["items"]["properties"]) == set(row)
+    assert set(schemas["OptionQuote"]["properties"]) == set(row["call"])
+
+    operation = spec["paths"]["/api/agent/v1/option-chain"]["get"]
+    assert operation["x-scope-class"] == "R"
+    params = {item["name"]: item for item in operation["parameters"]}
+    assert set(params) == {"product", "expiry_month", "strikes", "center"}
+    assert params["strikes"]["schema"]["maximum"] == MAX_STRIKES
+    route_source = (
+        BACKEND_ROOT / "backend_api_python" / "app" / "routes" / "agent_v1" / "markets.py"
+    ).read_text(encoding="utf-8")
+    for name in params:
+        assert f'request.args.get("{name}")' in route_source, name
+
+    backtest = spec["paths"]["/api/agent/v1/backtest/run"]["post"]
+    assert "strategyV2.optionsBacktestUnsupported" in backtest["description"]
+
+
 def test_agent_openapi_documents_environment_contract():
     from datetime import datetime, timezone
 
