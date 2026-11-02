@@ -169,7 +169,7 @@ Content-Type: application/json
 
 <code>TWStock</code> 数据来自只读的富邦行情 sidecar，只支持研究、回测与模拟盘，实盘策略会被拒绝。日／周 K 回测区间最长 1 年（含指标预热）。分 K 与小时 K 由每日排程累积在 PostgreSQL 的 1 分 K（加上 sidecar 近 5 个交易日）重新取样，因此使用默认的回测区间上限；历史从排程第一次执行的交易日开始，data-coverage 会回报实际最早的一根。累积的代码（<code>TW_KLINE_COLLECT_SYMBOLS</code> 加上自选列表）见 [富邦 sidecar 说明](../../fubon_sidecar/README_CN.md)。
 
-<code>TWFutures</code>（市场别名 <code>TAIFEX</code>、<code>TWF</code>）提供期交所指数期货，只支持研究、回测与模拟盘，实盘策略会被拒绝。所有周期都由每日排程按月份合约存储的 1 分 K（加上 sidecar 当前盘别）组成，历史从开始累积的那天算起，data-coverage 会回报实际最早的一根。1 小时以上周期回测区间最长 2 年（含指标预热），更短周期使用默认上限。
+<code>TWFutures</code>（市场别名 <code>TAIFEX</code>、<code>TWF</code>）提供期交所指数期货，只支持研究、回测与模拟盘，实盘策略会被拒绝。所有周期都由每日排程按月份合约存储的 1 分 K（加上 sidecar 当前盘别）组成，分钟历史从开始累积的那天、或最早导入的期交所逐笔档（约近 30 个交易日）算起。日 K 与周 K 在没有 1 分 K 的日子另外使用从期交所每日行情导入的日 K，可回溯多年（见 <code>fubon_sidecar/README_CN.md</code> 的期交所历史导入）；data-coverage 会回报所请求周期实际最早的一根。1 小时以上周期回测区间最长 2 年（含指标预热），更短周期使用默认上限。
 
 - **交易时段**：日盘 08:45-13:45、夜盘 15:00-次日 05:00（台北时间）。交易日采用 XTAI 日历，夜盘归属**下一个**交易日（期交所定义），因此日 K 从前一晚 15:00 开盘到 13:45 收盘，时间标在该交易日的台北午夜。回测选项 <code>session</code> 为 <code>all</code>（默认，日盘 + 夜盘）或 <code>regular</code>（仅日盘）。
 - **近月与换月**：合约最后交易日为该月第三个星期三（遇假日顺延到下一个交易日），当天 13:30 后即不再是近月，当晚夜盘已交易下个月合约。连续代码的每一根 K 线都取当时的近月合约；不做价差调整，换月时价格会跳动一个月份价差，结果中以 <code>executionAssumptions.twFutures.rollMethod == "front_month_unadjusted"</code> 标示。要研究单一合约、不换月时，请用指定月份代码。
