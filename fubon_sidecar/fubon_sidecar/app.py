@@ -105,9 +105,11 @@ def create_app(
 
     @app.get("/v1/stock/tickers")
     def stock_tickers(
-        ticker_type: str = Query(alias="type"), exchange: str | None = None
+        ticker_type: str = Query(alias="type"),
+        exchange: str | None = None,
+        board: str | None = Query(default=None, alias="market"),
     ) -> dict[str, Any]:
-        return market.stock_tickers(ticker_type, exchange)
+        return market.stock_tickers(ticker_type, exchange, board)
 
     @app.get("/v1/futopt/intraday/candles")
     def futopt_intraday_candles(

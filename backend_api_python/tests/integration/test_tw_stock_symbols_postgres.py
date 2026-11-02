@@ -126,18 +126,25 @@ def symbols_schema(monkeypatch):
 
 class _FakeTickerSource:
     TICKERS = {
-        ("EQUITY", "TWSE"): [
+        ("EQUITY", "TWSE", "TSE"): [
             {"symbol": "2330", "name": "台積電"},
             {"symbol": "0050", "name": "元大台灣50"},
             {"symbol": "030001", "name": "台積電元大5A購01"},
         ],
-        ("EQUITY", "TPEx"): [{"symbol": "6488", "name": "環球晶"}],
-        ("INDEX", "TWSE"): [{"symbol": "IX0001", "name": "發行量加權股價指數"}],
-        ("INDEX", "TPEx"): [{"symbol": "IX0043", "name": "櫃買指數"}],
+        ("EQUITY", "TPEx", "OTC"): [{"symbol": "6488", "name": "環球晶"}],
+        ("INDEX", "TWSE", None): [{"symbol": "IX0001", "name": "發行量加權股價指數"}],
+        ("INDEX", "TPEx", None): [{"symbol": "IX0043", "name": "櫃買指數"}],
     }
 
-    def get_tickers(self, ticker_type, exchange=None):
-        return list(self.TICKERS.get((ticker_type, exchange), []))
+    def get_tickers(self, ticker_type, exchange=None, market=None):
+        return list(self.TICKERS.get((ticker_type, exchange, market), []))
+
+
+class _FailingTickerSource:
+    def get_tickers(self, ticker_type, exchange=None, market=None):
+        from app.data_sources.tw_stock import FubonSidecarError
+
+        raise FubonSidecarError("Fubon market data sidecar is not ready (503 service unavailable)")
 
 
 def _tw_rows(factory):
@@ -180,3 +187,51 @@ def test_repeated_sidecar_sync_is_idempotent_and_keeps_hot_flags(symbols_schema)
     assert by_symbol["IX0043"]["exchange"] == "TPEx"
     assert not any(row["symbol"].startswith("030001") for row in second)
     assert [row["symbol"] for row in search_symbols("TWStock", "環球")] == ["6488.TWO"]
+
+
+def _active_flags(factory):
+    with factory() as db:
+        cur = db.cursor()
+        cur.execute("SELECT symbol, is_active, is_hot FROM qd_market_symbols WHERE market = 'TWStock'")
+        rows = {row["symbol"]: (row["is_active"], row["is_hot"]) for row in cur.fetchall()}
+        cur.close()
+    return rows
+
+
+@pytest.mark.integration
+def test_full_sync_deactivates_missing_codes_and_keeps_hot_flags(symbols_schema):
+    def full_sync():
+        rows = symbol_master_sync.fetch_tw_stock_symbols(_FakeTickerSource())
+        symbol_master_sync.upsert_symbol_master(rows, deactivate_missing_tw_stock=True)
+
+    full_sync()
+    first = _active_flags(symbols_schema)
+    full_sync()
+    second = _active_flags(symbols_schema)
+
+    assert first == second
+    assert second["2330.TW"] == (1, 1)
+    assert second["IX0001"] == (1, 1)
+    assert second["6488.TWO"][0] == 1
+    # seeded codes absent from the listing are switched off, hot flag kept
+    assert second["2317.TW"] == (0, 1)
+    assert "2317.TW" not in {row["symbol"] for row in get_hot_symbols("TWStock", limit=20)}
+
+
+@pytest.mark.integration
+def test_failing_sidecar_deactivates_nothing(symbols_schema, monkeypatch):
+    from app.services import market_catalog_sync
+    from app.utils import config_loader
+
+    before = _active_flags(symbols_schema)
+    monkeypatch.setattr(config_loader, "load_addon_config", lambda: {"fubon_sidecar": {"token": "test-key"}})
+    monkeypatch.setattr(
+        market_catalog_sync,
+        "fetch_tw_stock_symbols",
+        lambda: symbol_master_sync.fetch_tw_stock_symbols(_FailingTickerSource()),
+    )
+
+    result = market_catalog_sync._sync_tw_stock_catalog()
+
+    assert result["ok"] is False
+    assert _active_flags(symbols_schema) == before

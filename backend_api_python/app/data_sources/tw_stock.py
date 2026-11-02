@@ -481,11 +481,18 @@ class TWStockDataSource(BaseDataSource):
             "symbol": display,
         }
 
-    def get_tickers(self, ticker_type: str, exchange: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Return sidecar ``/v1/stock/tickers`` rows (``{symbol, name}``); [] when Fubon has none."""
+    def get_tickers(
+        self, ticker_type: str, exchange: Optional[str] = None, market: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return sidecar ``/v1/stock/tickers`` rows (``{symbol, name}``); [] when Fubon has none.
+
+        ``market`` is the Fubon board filter (TSE, OTC, ESB, TIB, PSB).
+        """
         params: Dict[str, Any] = {"type": ticker_type}
         if exchange:
             params["exchange"] = exchange
+        if market:
+            params["market"] = market
         payload = self._request("/v1/stock/tickers", params)
         rows = (payload or {}).get("tickers") or []
         return [row for row in rows if isinstance(row, dict)]

@@ -16,7 +16,7 @@ from app.services.symbol_master_sync import (
 
 
 SIDECAR_TICKERS = {
-    ("EQUITY", "TWSE"): [
+    ("EQUITY", "TWSE", "TSE"): [
         {"symbol": "2330", "name": "台積電"},
         {"symbol": "0050", "name": "元大台灣50"},
         {"symbol": "006208", "name": "富邦台50"},
@@ -29,33 +29,51 @@ SIDECAR_TICKERS = {
         {"symbol": "", "name": "blank"},
         {"symbol": "1101", "name": ""},
     ],
-    ("EQUITY", "TPEx"): [
+    ("EQUITY", "TWSE", "TIB"): [
+        {"symbol": "6922", "name": "創新板公司"},
+    ],
+    ("EQUITY", "TPEx", "OTC"): [
         {"symbol": "6488", "name": "環球晶"},
         {"symbol": "00679B", "name": "元大美債20年"},
         {"symbol": "70000P", "name": "某權證"},
     ],
-    ("INDEX", "TWSE"): [
+    ("EQUITY", "TPEx", "ESB"): [
+        {"symbol": "7704", "name": "興櫃公司"},
+    ],
+    ("EQUITY", "TPEx", "PSB"): [
+        {"symbol": "7810", "name": "戰略新板公司"},
+    ],
+    ("INDEX", "TWSE", None): [
         {"symbol": "IX0001", "name": "發行量加權股價指數"},
         {"symbol": "IX0010", "name": "水泥類指數"},
     ],
-    ("INDEX", "TPEx"): [
+    ("INDEX", "TPEx", None): [
         {"symbol": "IX0043", "name": "櫃買指數"},
     ],
 }
 
 
 class _FakeTickerSource:
+    """Mimics ``intraday.tickers``: without a board filter every board of the exchange is returned."""
+
     def __init__(self, tickers=None):
         self.tickers = SIDECAR_TICKERS if tickers is None else tickers
         self.calls = []
 
-    def get_tickers(self, ticker_type, exchange=None):
-        self.calls.append((ticker_type, exchange))
-        return list(self.tickers.get((ticker_type, exchange), []))
+    def get_tickers(self, ticker_type, exchange=None, market=None):
+        self.calls.append((ticker_type, exchange, market))
+        if market is None:
+            return [
+                raw
+                for (kind, ex, _board), rows in self.tickers.items()
+                if kind == ticker_type and ex == exchange
+                for raw in rows
+            ]
+        return list(self.tickers.get((ticker_type, exchange, market), []))
 
 
 class _UnavailableSource:
-    def get_tickers(self, ticker_type, exchange=None):
+    def get_tickers(self, ticker_type, exchange=None, market=None):
         raise FubonSidecarError("Fubon market data sidecar at http://sidecar is unreachable")
 
 
@@ -94,17 +112,44 @@ def test_warrants_bonds_etns_preferred_and_minor_indices_are_excluded():
     assert "1101.TW" not in symbols  # no name
 
 
-def test_only_equity_and_index_ticker_types_are_requested():
+def test_equities_are_requested_per_listed_board_and_indices_per_exchange():
     source = _FakeTickerSource()
 
     fetch_tw_stock_symbols(source)
 
     assert source.calls == [
-        ("EQUITY", "TWSE"),
-        ("EQUITY", "TPEx"),
-        ("INDEX", "TWSE"),
-        ("INDEX", "TPEx"),
+        ("EQUITY", "TWSE", "TSE"),
+        ("EQUITY", "TWSE", "TIB"),
+        ("EQUITY", "TPEx", "OTC"),
+        ("INDEX", "TWSE", None),
+        ("INDEX", "TPEx", None),
     ]
+
+
+def test_emerging_board_codes_are_not_synced_and_innovation_board_is():
+    rows = _by_symbol(fetch_tw_stock_symbols(_FakeTickerSource()))
+
+    assert "7704.TWO" not in rows  # ESB 興櫃一般板
+    assert "7810.TWO" not in rows  # PSB 興櫃戰略新板
+    assert rows["6922.TW"].exchange == "TWSE"
+    assert rows["6922.TW"].asset_class == "equity"
+
+
+def test_classifier_rejects_emerging_board_and_mismatched_board():
+    row = {"symbol": "7704", "name": "興櫃公司"}
+    assert classify_tw_ticker("EQUITY", "TPEx", row, market="ESB") is None
+    assert classify_tw_ticker("EQUITY", "TPEx", row, market="PSB") is None
+    assert classify_tw_ticker("EQUITY", "TPEx", {**row, "market": "ESB"}, market="OTC") is None
+    assert classify_tw_ticker("EQUITY", "TWSE", row, market="OTC") is None
+    assert classify_tw_ticker("EQUITY", "TPEx", row, market="OTC").symbol == "7704.TWO"
+
+
+def test_full_delivery_stocks_cannot_be_told_apart_from_the_ticker_list():
+    # The ticker list has no full-delivery (全額交割) filter or row field, so a
+    # full-delivery code on a listed board is kept like any ordinary share.
+    row = {"symbol": "1456", "name": "全額交割示例"}
+
+    assert classify_tw_ticker("EQUITY", "TWSE", row, market="TSE").asset_class == "equity"
 
 
 def test_classifier_rejects_warrant_ticker_type_and_unknown_exchange():
@@ -176,6 +221,111 @@ def test_upsert_is_an_idempotent_conflict_update_that_keeps_hot_flags(monkeypatc
     assert asset_classes["IX0001"] == "index"
 
 
+# --------------------------------------------------------------------------- delisted codes
+
+
+class _ActiveCountCursor(_RecordingCursor):
+    def __init__(self, log, active):
+        super().__init__(log)
+        self.active = active
+
+    def fetchone(self):
+        return {"active": self.active}
+
+
+class _ActiveCountConnection(_RecordingConnection):
+    def __init__(self, log, active):
+        super().__init__(log)
+        self.active = active
+
+    def cursor(self):
+        return _ActiveCountCursor(self.log, self.active)
+
+
+_DEACTIVATE_SQL = "UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'TWStock'"
+
+
+def _upsert_with_deactivation(monkeypatch, rows, active):
+    log = []
+    monkeypatch.setattr(symbol_master_sync, "get_db_connection", lambda: _ActiveCountConnection(log, active))
+    symbol_master_sync.upsert_symbol_master(rows, deactivate_missing_tw_stock=True)
+    return [sql for sql, _params in log]
+
+
+def test_full_listing_deactivates_missing_codes_before_reactivating_listed_ones(monkeypatch):
+    rows = fetch_tw_stock_symbols(_FakeTickerSource())
+
+    statements = _upsert_with_deactivation(monkeypatch, rows, active=len(rows) + 2)
+
+    assert _DEACTIVATE_SQL in statements
+    position = statements.index(_DEACTIVATE_SQL)
+    inserts = [sql for sql in statements[position + 1:] if sql.startswith("INSERT INTO qd_market_symbols")]
+    assert len(inserts) == len(rows)
+    for sql in inserts:
+        # listed codes come back active; hot flags and sort order are not reset
+        assert "is_active = 1" in sql.split("DO UPDATE", 1)[1]
+        assert "is_hot =" not in sql.split("DO UPDATE", 1)[1]
+    # only TWStock rows are switched off
+    assert all("is_active = 0" not in sql or "market = 'TWStock'" in sql for sql in statements)
+
+
+def test_repeated_full_sync_issues_identical_statements(monkeypatch):
+    first = _upsert_with_deactivation(monkeypatch, fetch_tw_stock_symbols(_FakeTickerSource()), active=12)
+    second = _upsert_with_deactivation(monkeypatch, fetch_tw_stock_symbols(_FakeTickerSource()), active=12)
+
+    assert first == second
+
+
+def test_listing_missing_one_exchange_deactivates_nothing(monkeypatch):
+    tickers = {key: value for key, value in SIDECAR_TICKERS.items() if key[1] != "TPEx" or key[0] == "INDEX"}
+    rows = fetch_tw_stock_symbols(_FakeTickerSource(tickers))
+
+    statements = _upsert_with_deactivation(monkeypatch, rows, active=len(rows))
+
+    assert rows
+    assert not any("is_active = 0" in sql for sql in statements)
+
+
+def test_truncated_listing_deactivates_nothing(monkeypatch):
+    rows = fetch_tw_stock_symbols(_FakeTickerSource())
+
+    statements = _upsert_with_deactivation(monkeypatch, rows, active=len(rows) * 2)
+
+    assert not any("is_active = 0" in sql for sql in statements)
+    assert sum(sql.startswith("INSERT INTO qd_market_symbols") for sql in statements) == len(rows)
+
+
+def test_plain_upsert_never_deactivates_twstock(monkeypatch):
+    log = []
+    monkeypatch.setattr(symbol_master_sync, "get_db_connection", lambda: _RecordingConnection(log))
+
+    symbol_master_sync.upsert_symbol_master(fetch_tw_stock_symbols(_FakeTickerSource()))
+
+    assert not any("is_active = 0" in sql for sql, _params in log)
+
+
+def test_catalog_sync_with_failing_sidecar_writes_nothing(monkeypatch):
+    from app.utils import config_loader
+
+    # Patch the loader rather than the env so its cache is not primed for later tests.
+    monkeypatch.setattr(config_loader, "load_addon_config", lambda: {"fubon_sidecar": {"token": "test-key"}})
+    monkeypatch.setattr(
+        market_catalog_sync,
+        "fetch_tw_stock_symbols",
+        lambda: fetch_tw_stock_symbols(_UnavailableSource()),
+    )
+    monkeypatch.setattr(
+        market_catalog_sync,
+        "upsert_symbol_master",
+        lambda rows, **_kwargs: (_ for _ in ()).throw(AssertionError("nothing should be written")),
+    )
+
+    result = market_catalog_sync._sync_tw_stock_catalog()
+
+    assert result["ok"] is False
+    assert result["skipped"] is True
+
+
 # --------------------------------------------------------------------------- unavailable sidecar
 
 
@@ -233,22 +383,26 @@ def test_catalog_sync_skips_unreachable_sidecar_and_keeps_crypto_status(monkeypa
 def test_catalog_sync_upserts_twstock_rows_when_sidecar_is_available(monkeypatch):
     monkeypatch.setenv("FUBON_SIDECAR_TOKEN", "test-key")
     written = []
+    options = []
     monkeypatch.setattr(
         market_catalog_sync,
         "fetch_tw_stock_symbols",
         lambda: fetch_tw_stock_symbols(_FakeTickerSource()),
     )
-    monkeypatch.setattr(
-        market_catalog_sync,
-        "upsert_symbol_master",
-        lambda rows: written.extend(rows) or len(rows),
-    )
+
+    def fake_upsert(rows, **kwargs):
+        options.append(kwargs)
+        written.extend(rows)
+        return len(rows)
+
+    monkeypatch.setattr(market_catalog_sync, "upsert_symbol_master", fake_upsert)
 
     result = market_catalog_sync._sync_tw_stock_catalog()
 
     assert result["ok"] is True
     assert result["rows"] == result["upserted"] == len(written)
     assert {row.market for row in written} == {"TWStock"}
+    assert options == [{"deactivate_missing_tw_stock": True}]
 
 
 # --------------------------------------------------------------------------- data source
@@ -265,7 +419,11 @@ def test_data_source_get_tickers_reads_sidecar_ticker_list(monkeypatch):
     monkeypatch.setattr(source, "_request", fake_request)
 
     assert source.get_tickers("EQUITY", "TPEx") == [{"symbol": "6488", "name": "環球晶"}]
-    assert calls == [("/v1/stock/tickers", {"type": "EQUITY", "exchange": "TPEx"})]
+    assert source.get_tickers("EQUITY", "TPEx", market="OTC") == [{"symbol": "6488", "name": "環球晶"}]
+    assert calls == [
+        ("/v1/stock/tickers", {"type": "EQUITY", "exchange": "TPEx"}),
+        ("/v1/stock/tickers", {"type": "EQUITY", "exchange": "TPEx", "market": "OTC"}),
+    ]
 
 
 def test_data_source_get_tickers_treats_not_found_as_empty(monkeypatch):

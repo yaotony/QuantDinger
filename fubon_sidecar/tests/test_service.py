@@ -257,14 +257,33 @@ def test_stock_tickers(service, fake_sdk):
     body = service.stock_tickers("EQUITY", "TWSE")
 
     assert fake_sdk.calls == [("stock.intraday.tickers", {"type": "EQUITY", "exchange": "TWSE"})]
-    assert body == {"type": "EQUITY", "exchange": "TWSE", "tickers": [{"symbol": "2330", "name": "台積電"}]}
+    assert body == {
+        "type": "EQUITY",
+        "exchange": "TWSE",
+        "market": None,
+        "tickers": [{"symbol": "2330", "name": "台積電"}],
+    }
 
 
-def test_stock_tickers_validate_type_and_exchange(service):
+def test_stock_tickers_forward_board_filter(service, fake_sdk):
+    fake_sdk.responses["stock.intraday.tickers"] = {"data": [{"symbol": "6488", "name": "環球晶"}]}
+
+    body = service.stock_tickers("EQUITY", "TPEx", "OTC")
+
+    assert fake_sdk.calls == [
+        ("stock.intraday.tickers", {"type": "EQUITY", "exchange": "TPEx", "market": "OTC"})
+    ]
+    assert body["market"] == "OTC"
+    assert body["tickers"] == [{"symbol": "6488", "name": "環球晶"}]
+
+
+def test_stock_tickers_validate_type_exchange_and_market(service):
     with pytest.raises(InvalidRequestError):
         service.stock_tickers("BOND")
     with pytest.raises(InvalidRequestError):
         service.stock_tickers("EQUITY", "NYSE")
+    with pytest.raises(InvalidRequestError):
+        service.stock_tickers("EQUITY", "TPEx", "NASDAQ")
 
 
 # --------------------------------------------------------------------------- futopt

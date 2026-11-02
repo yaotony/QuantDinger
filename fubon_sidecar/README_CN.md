@@ -158,10 +158,20 @@ python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
 | `GET /v1/stock/candles?symbol&timeframe&from&to` | `stock.historical.candles` | `D`/`W`/`M` 可指定 1 年內的 `from`/`to`（`YYYY-MM-DD` 或 unix 秒）；`1`/`5`/`10`/`15`/`30`/`60` 分 K 富邦只回近 5 日，帶 `from`/`to` 會回 400 |
 | `GET /v1/stock/intraday/candles?symbol&timeframe` | `stock.intraday.candles` | 當日分 K（含指數，例如 `IX0001`） |
 | `GET /v1/stock/quote?symbol` | `stock.intraday.quote` | 最新價、漲跌、開高低、昨收、名稱 |
-| `GET /v1/stock/tickers?type&exchange` | `stock.intraday.tickers` | `type` `EQUITY`/`INDEX`/`WARRANT`/`ODDLOT`；`exchange` `TWSE`/`TPEx` |
+| `GET /v1/stock/tickers?type&exchange&market` | `stock.intraday.tickers` | `type` `EQUITY`/`INDEX`/`WARRANT`/`ODDLOT`；`exchange` `TWSE`/`TPEx`；選填市場別 `market` `TSE`/`OTC`/`ESB`/`TIB`/`PSB`；每列為 `{symbol, name}` |
 | `GET /v1/futopt/intraday/candles?symbol&timeframe&session` | `futopt.intraday.candles` | `session` `regular`（日盤，預設）或 `afterhours`（夜盤） |
 | `GET /v1/futopt/quote?symbol&session` | `futopt.intraday.quote` | 最新價、`previousClose` 等 |
 | `GET /v1/futopt/tickers?type` | `futopt.intraday.tickers` | `type` `FUTURE`/`OPTION`；含 `symbol`、`name`、`endDate`、`settlementDate` |
+
+股票代碼清單（`/v1/stock/tickers`）：富邦文件列出的篩選參數有 `type`、`exchange`、`market`、
+`industry`、`isNormal`、`isAttention`、`isDisposition`、`isHalted`；每列只有 `symbol` 與 `name`，
+所以市場別要靠 `market` 篩選。sidecar 會轉送 `market`，並在回應中帶回（`{type, exchange, market, tickers}`）。
+市場別代碼：`TSE` 上市、`OTC` 上櫃、`TIB` 臺灣創新板，興櫃為 `ESB`（興櫃一般板）與 `PSB`（興櫃戰略新板）。
+全額交割股沒有對應的篩選參數或欄位；`isNormal` 只區分注意、處置與暫停交易股票。
+
+後端 TWStock 代碼表只查 `TWSE`+`TSE`、`TWSE`+`TIB`、`TPEx`+`OTC` 的 `EQUITY`，興櫃代碼不會進入代碼表。
+清單完整時（兩個交易所都有股票，且至少保留目前啟用列的 70%），本次沒出現的 TWStock 代碼會標為停用；
+sidecar 失敗或回傳不完整時不會停用任何代碼。
 
 K 線回傳 `{symbol, timeframe, session?, candles: [{time, open, high, low, close, volume}]}`，依時間升冪。
 富邦 K 線的時間在 `date` 欄位（ISO 字串，例如 `2026-07-06T08:45:00.000+08:00`；日 K 為

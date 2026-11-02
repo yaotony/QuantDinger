@@ -860,31 +860,56 @@ def fetch_moex_symbols() -> List[SymbolMasterRow]:
 
 
 # TWStock catalog rules. The sidecar ``/v1/stock/tickers`` rows only carry
-# ``symbol`` and ``name``, so instruments are classified by the TWSE / TPEx
-# security code conventions:
+# ``symbol`` and ``name``; the board is chosen with the upstream ``market``
+# query filter instead of a row field:
+#   - EQUITY lists are requested per board: TSE and TIB (Taiwan Innovation
+#     Board) under TWSE, OTC under TPEx. The emerging boards ESB / PSB (興櫃)
+#     are never requested, and rows tagged with them are rejected.
+# Within a board, instruments are classified by the security code conventions:
 #   - ordinary shares: four digits, first digit 1-9 (2330, 6488)
 #   - ETFs: ``00`` followed by 2-4 digits and an optional letter (0050, 00878,
 #     006208, 00631L, 00679B)
 #   - excluded: warrants (six digits such as 030001 / 70000P, also a separate
 #     ``WARRANT`` ticker type), convertible / corporate bonds (five digits such
 #     as 23301), ETNs (020000), preferred shares (2881A) and anything else.
-#   - full-delivery stocks share the ordinary-share code format and the
-#     sidecar ticker rows carry no flag for them, so they cannot be told apart
-#     here; excluding them needs a sidecar field or filter first.
+#   - full-delivery stocks (全額交割) share the ordinary-share code format and
+#     the ticker list has no filter or row field for them (``isNormal`` only
+#     separates attention / disposition / halted stocks), so they stay listed.
 # Only the main indices are kept from the ``INDEX`` ticker lists.
 TW_STOCK_EXCHANGE_SUFFIX = {"TWSE": ".TW", "TPEx": ".TWO"}
+TW_STOCK_EQUITY_BOARDS: Tuple[Tuple[str, str], ...] = (("TWSE", "TSE"), ("TWSE", "TIB"), ("TPEx", "OTC"))
+TW_STOCK_EXCLUDED_BOARDS = frozenset({"ESB", "PSB"})
 TW_MAIN_INDEX_CODES = frozenset({"IX0001", "IX0043"})
+# Missing TWStock codes are deactivated only when the new list keeps at least
+# this share of the currently active rows, so a truncated sidecar response
+# cannot switch off the market.
+TW_STOCK_MIN_RETAINED_RATIO = 0.7
 _TW_ORDINARY_SHARE_RE = re.compile(r"^[1-9]\d{3}$")
 _TW_ETF_RE = re.compile(r"^00\d{2,4}[A-Z]?$")
 _TW_INDEX_RE = re.compile(r"^IX\d{4}$")
 
 
-def classify_tw_ticker(ticker_type: str, exchange: str, raw: Dict[str, object]) -> Optional[SymbolMasterRow]:
-    """Map one sidecar ticker row to a TWStock catalog row, or None when excluded."""
+def _tw_board_matches_exchange(board: str, exchange: str) -> bool:
+    return any(exchange == ex and board == b for ex, b in TW_STOCK_EQUITY_BOARDS)
+
+
+def classify_tw_ticker(
+    ticker_type: str, exchange: str, raw: Dict[str, object], market: Optional[str] = None
+) -> Optional[SymbolMasterRow]:
+    """Map one sidecar ticker row to a TWStock catalog row, or None when excluded.
+
+    ``market`` is the board the list was requested for; a ``market`` field on
+    the row itself takes precedence. Emerging boards are always excluded.
+    """
     code = _clean_symbol(raw.get("symbol"))
     name = _clean_text(raw.get("name"))
     suffix = TW_STOCK_EXCHANGE_SUFFIX.get(exchange)
     if not code or not name or not suffix:
+        return None
+    board = _clean_symbol(raw.get("market") or market)
+    if board in TW_STOCK_EXCLUDED_BOARDS:
+        return None
+    if ticker_type == "EQUITY" and board and not _tw_board_matches_exchange(board, exchange):
         return None
     if ticker_type == "INDEX":
         if _TW_INDEX_RE.match(code) and code in TW_MAIN_INDEX_CODES:
@@ -904,6 +929,9 @@ def classify_tw_ticker(ticker_type: str, exchange: str, raw: Dict[str, object]) 
 def fetch_tw_stock_symbols(source=None) -> List[SymbolMasterRow]:
     """Fetch TWSE / TPEx stocks, ETFs and main indices from the Fubon sidecar.
 
+    Equities are requested per listed board (TSE, TIB, OTC) so emerging-board
+    (興櫃) codes never enter the catalog.
+
     Raises ``FubonSidecarError`` when the sidecar is not configured or not
     reachable so callers can log a warning and skip the TWStock catalog.
     """
@@ -911,13 +939,27 @@ def fetch_tw_stock_symbols(source=None) -> List[SymbolMasterRow]:
 
     source = source or TWStockDataSource()
     rows: List[SymbolMasterRow] = []
-    for ticker_type in ("EQUITY", "INDEX"):
-        for exchange in TW_STOCK_EXCHANGE_SUFFIX:
-            for raw in source.get_tickers(ticker_type, exchange):
-                row = classify_tw_ticker(ticker_type, exchange, raw)
-                if row is not None:
-                    rows.append(row)
+    for exchange, board in TW_STOCK_EQUITY_BOARDS:
+        for raw in source.get_tickers("EQUITY", exchange, market=board):
+            row = classify_tw_ticker("EQUITY", exchange, raw, market=board)
+            if row is not None:
+                rows.append(row)
+    for exchange in TW_STOCK_EXCHANGE_SUFFIX:
+        for raw in source.get_tickers("INDEX", exchange):
+            row = classify_tw_ticker("INDEX", exchange, raw)
+            if row is not None:
+                rows.append(row)
     return _unique_rows(rows)
+
+
+def tw_stock_rows_complete(rows: Sequence[SymbolMasterRow]) -> bool:
+    """True when a TWStock fetch holds stocks or ETFs from both TWSE and TPEx."""
+    exchanges = {
+        row.exchange
+        for row in rows
+        if row.market == "TWStock" and row.asset_class in ("equity", "etf")
+    }
+    return set(TW_STOCK_EXCHANGE_SUFFIX) <= exchanges
 
 
 # TWFutures catalog: every monthly contract of the sidecar FUTURE list (TXFH6)
@@ -1092,13 +1134,44 @@ FETCHERS = {
 }
 
 
-def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
-    """Upsert rows while preserving curated hot flags and sort order."""
+def _deactivate_tw_stock_catalog(cur, rows: Sequence[SymbolMasterRow]) -> bool:
+    """Mark every TWStock row inactive before a full re-listing; the upsert re-activates.
+
+    Skipped (returns False) unless ``rows`` is a complete TWStock listing that
+    keeps at least ``TW_STOCK_MIN_RETAINED_RATIO`` of the active rows. Hot
+    flags and sort order are left untouched.
+    """
+    tw_rows = [row for row in rows if row.market == "TWStock"]
+    if not tw_stock_rows_complete(tw_rows):
+        logger.warning("TWStock listing incomplete; delisted codes were not deactivated")
+        return False
+    cur.execute("SELECT COUNT(*) AS active FROM qd_market_symbols WHERE market = 'TWStock' AND is_active = 1")
+    found = cur.fetchone()
+    active = int(dict(found or {}).get("active") or 0)
+    if len(tw_rows) < active * TW_STOCK_MIN_RETAINED_RATIO:
+        logger.warning(
+            "TWStock listing has %s rows for %s active codes; delisted codes were not deactivated",
+            len(tw_rows), active,
+        )
+        return False
+    cur.execute("UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'TWStock'")
+    return True
+
+
+def upsert_symbol_master(rows: Sequence[SymbolMasterRow], *, deactivate_missing_tw_stock: bool = False) -> int:
+    """Upsert rows while preserving curated hot flags and sort order.
+
+    With ``deactivate_missing_tw_stock`` the rows must be a full TWStock fetch:
+    TWStock codes absent from it are marked ``is_active = 0`` in the same
+    transaction (see ``_deactivate_tw_stock_catalog`` for the safety checks).
+    """
     if not rows:
         return 0
     with get_db_connection() as db:
         cur = db.cursor()
         count = 0
+        if deactivate_missing_tw_stock:
+            _deactivate_tw_stock_catalog(cur, rows)
         crypto_contexts = {(row.exchange, row.market_type) for row in rows if row.market == "Crypto" and row.exchange}
         for exchange_id, market_type in crypto_contexts:
             cur.execute(
@@ -1195,7 +1268,7 @@ def sync_symbol_master(markets: Optional[Sequence[str]] = None) -> Dict[str, Dic
             continue
         try:
             rows = fetcher()
-            written = upsert_symbol_master(rows)
+            written = upsert_symbol_master(rows, deactivate_missing_tw_stock=market == "TWStock")
             stats[market] = {"ok": True, "rows": len(rows), "upserted": written}
         except Exception as e:
             logger.warning("symbol master sync failed market=%s: %s", market, e)
