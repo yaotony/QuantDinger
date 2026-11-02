@@ -10,6 +10,15 @@ def test_symbol_master_asset_class_defaults_follow_market_type():
     assert _default_asset_class("Futures") == "futures"
 
 
+def test_twstock_asset_class_separates_stocks_etfs_and_indices():
+    assert _default_asset_class("TWStock") == "equity"
+    assert _default_asset_class("TWStock", "2330.TW") == "equity"
+    assert _default_asset_class("TWStock", "6488.TWO") == "equity"
+    assert _default_asset_class("TWStock", "0050.TW") == "etf"
+    assert _default_asset_class("TWStock", "00631L.TW") == "etf"
+    assert _default_asset_class("TWStock", "IX0001") == "index"
+
+
 def test_explicit_etf_classification_is_preserved():
     row = SymbolMasterRow("HKStock", "02800", "Tracker Fund", "HKEX", "HKD", asset_class="etf")
     assert row.asset_class == "etf"

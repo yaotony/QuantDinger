@@ -95,7 +95,22 @@ STATIC_MARKET_ROWS: List[Row] = [
     ("MOEX", "MGNT", "Magnit", "MOEX", "RUB"),
     ("MOEX", "SNGS", "Surgutneftegas", "MOEX", "RUB"),
     ("MOEX", "PLZL", "Polyus", "MOEX", "RUB"),
+    # TWStock starter rows keep search and the hot list usable before the
+    # Fubon sidecar catalog sync has run.
+    ("TWStock", "2330.TW", "台積電", "TWSE", "TWD"),
+    ("TWStock", "2317.TW", "鴻海", "TWSE", "TWD"),
+    ("TWStock", "2454.TW", "聯發科", "TWSE", "TWD"),
+    ("TWStock", "0050.TW", "元大台灣50", "TWSE", "TWD"),
+    ("TWStock", "0056.TW", "元大高股息", "TWSE", "TWD"),
+    ("TWStock", "IX0001", "發行量加權股價指數", "TWSE", "TWD"),
 ]
+
+# (market, asset_class) -> symbols flagged hot with that asset class.
+CURATED_HOT_SYMBOLS = {
+    ("TWStock", "equity"): ("2330.TW", "2317.TW", "2454.TW"),
+    ("TWStock", "etf"): ("0050.TW", "0056.TW"),
+    ("TWStock", "index"): ("IX0001",),
+}
 
 CURATED_ETF_SYMBOLS = {
     "HKStock": (
@@ -298,6 +313,12 @@ def add_moex_rows(col: Collector) -> None:
             col.add("MOEX", symbol, name, "MOEX", "RUB")
 
 
+def add_tw_rows(col: Collector) -> None:
+    # The full TWStock catalog needs the Fubon sidecar, which is synced at
+    # runtime; the bundled seed only carries the starter rows.
+    add_static_rows(col, "TWStock")
+
+
 def sql_quote(value: object) -> str:
     return "'" + clean(value).replace("'", "''") + "'"
 
@@ -333,6 +354,14 @@ def build_sql(rows: List[Row], notes: List[str]) -> str:
             f"WHERE market = {sql_quote(market)} AND symbol IN ({quoted_symbols});",
             "",
         ])
+    for (market, asset_class), symbols in CURATED_HOT_SYMBOLS.items():
+        quoted_symbols = ",".join(sql_quote(symbol) for symbol in symbols)
+        out.extend([
+            "UPDATE qd_market_symbols",
+            f"SET asset_class = {sql_quote(asset_class)}, is_hot = 1, sort_order = GREATEST(sort_order, 80)",
+            f"WHERE market = {sql_quote(market)} AND symbol IN ({quoted_symbols});",
+            "",
+        ])
     return "\n".join(out)
 
 
@@ -342,7 +371,7 @@ def main() -> None:
     parser.add_argument(
         "--markets",
         nargs="*",
-        default=["CNStock", "HKStock", "USStock", "Crypto", "Forex", "Futures", "MOEX"],
+        default=["CNStock", "HKStock", "USStock", "Crypto", "Forex", "Futures", "MOEX", "TWStock"],
     )
     args = parser.parse_args()
 
@@ -358,6 +387,7 @@ def main() -> None:
         "Forex": add_forex_rows,
         "Futures": add_futures_rows,
         "MOEX": add_moex_rows,
+        "TWStock": add_tw_rows,
     }
     for market in args.markets:
         fetcher = fetchers.get(market)

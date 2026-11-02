@@ -8,6 +8,7 @@
 -- Forex: 14 rows fetched
 -- Futures: 13 rows fetched
 -- MOEX: 494 rows fetched
+-- TWStock: 6 rows fetched
 
 INSERT INTO qd_market_symbols (market, symbol, name, exchange, currency, is_active, is_hot, sort_order) VALUES
   ('CNStock', '000001', '平安银行', 'CN', 'CNY', 1, 0, 0),
@@ -9287,7 +9288,13 @@ INSERT INTO qd_market_symbols (market, symbol, name, exchange, currency, is_acti
   ('MOEX', 'ZAYM', 'Займер ао', 'MOEX', 'RUB', 1, 0, 0),
   ('MOEX', 'ZILL', 'Завод им. И.А.Лихачева ПАО ао', 'MOEX', 'RUB', 1, 0, 0),
   ('MOEX', 'ZVEZ', 'ЗВЕЗДА ПАО ао', 'MOEX', 'RUB', 1, 0, 0),
-  ('USStock', 'A', 'Agilent Technologies, Inc. Common Stock', 'NYSE', 'USD', 1, 0, 0),
+  ('TWStock', '0050.TW', '元大台灣50', 'TWSE', 'TWD', 1, 0, 0),
+  ('TWStock', '0056.TW', '元大高股息', 'TWSE', 'TWD', 1, 0, 0),
+  ('TWStock', '2317.TW', '鴻海', 'TWSE', 'TWD', 1, 0, 0),
+  ('TWStock', '2330.TW', '台積電', 'TWSE', 'TWD', 1, 0, 0),
+  ('TWStock', '2454.TW', '聯發科', 'TWSE', 'TWD', 1, 0, 0),
+  ('TWStock', 'IX0001', '發行量加權股價指數', 'TWSE', 'TWD', 1, 0, 0),
+  ('USStock', 'A','Agilent Technologies, Inc. Common Stock', 'NYSE', 'USD', 1, 0, 0),
   ('USStock', 'AA', 'Alcoa Corporation Common Stock', 'NYSE', 'USD', 1, 0, 0),
   ('USStock', 'AAA', 'Alternative Access First Priority CLO Bond ETF', 'NYSE Arca', 'USD', 1, 0, 0),
   ('USStock', 'AAAA', 'Amplius Aggressive Asset Allocation ETF', 'Cboe BZX', 'USD', 1, 0, 0),
@@ -22187,6 +22194,18 @@ WHERE market = 'USStock' AND symbol IN (
   'GLD','SLV','USO','XLF','XLK','XLE','XLV','XLI','XLY','XLP','XLU','VNQ','ARKK',
   'HYG','LQD','SCHD','VUG','VTV'
 );
+
+UPDATE qd_market_symbols
+SET asset_class = 'equity', is_hot = 1, sort_order = GREATEST(sort_order, 80)
+WHERE market = 'TWStock' AND symbol IN ('2330.TW','2317.TW','2454.TW');
+
+UPDATE qd_market_symbols
+SET asset_class = 'etf', is_hot = 1, sort_order = GREATEST(sort_order, 80)
+WHERE market = 'TWStock' AND symbol IN ('0050.TW','0056.TW');
+
+UPDATE qd_market_symbols
+SET asset_class = 'index', is_hot = 1, sort_order = GREATEST(sort_order, 80)
+WHERE market = 'TWStock' AND symbol IN ('IX0001');
 
 CREATE TABLE IF NOT EXISTS qd_market_symbol_aliases (
     id SERIAL PRIMARY KEY,
