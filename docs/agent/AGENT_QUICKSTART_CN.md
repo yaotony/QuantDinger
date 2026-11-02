@@ -50,6 +50,8 @@ curl -X POST http://localhost:8888/api/agent/v1/strategies \
 
 提交前可先调用 `GET /api/agent/v1/data-coverage`（`R` Scope；MCP 为 `get_data_coverage`）检查区间：传入 `market`、`symbol`、`timeframe`，可选 `start_date`、`end_date`、`warmup_bars`。返回数据源最早可用的 K 线时间（数据源无法提供时为 `unknown`，不做猜测）、含 warmup 的区间上限，以及区间是否可行和建议日期；判断规则与提交时的检查相同。
 
+期交所选择权只提供行情。用 `GET /api/agent/v1/option-chain?product=TXO&expiry_month=2026-08`（`R` Scope；MCP 为 `get_option_chain`）读取选择权链：返回各履约价的买权与卖权报价，默认以加权指数价格为中心（`strikes` 1-25，默认 10；可用 `center` 指定其他履约价）。周选商品为 `TX1`／`TX2`／`TX4`／`TX5`。`TXO23000H6` 这类合约代码（买权月份字母 A-L、卖权 M-X）也可在 `TWFutures` 市场下用于 `/klines` 与 `/price`。回测引擎不模拟权利金、到期、履约与保证金，因此策略中只要出现选择权合约，回测或部署都会返回 HTTP 400，`message` 为 `strategyV2.optionsBacktestUnsupported`。
+
 完整的设计与迭代流程、回测区间上限和错误处理见 [Agent 策略设计与回测迭代流程](AGENT_STRATEGY_ITERATION_CN.md)。
 
 成功的回测会写入 Backtest Center 历史，任务结果中的 `result.runId` 即该记录。使用 `R` Scope 读取回测历史：

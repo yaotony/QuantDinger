@@ -93,6 +93,9 @@ $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=afterhours'
   `TWStock:IX0001,TWStock:2330.TW,TWStock:0050.TW,TWFutures:TXF,TWFutures:MXF`），再加上所有使用者
   watchlist 中的 `TWStock`／`TWFutures` 代碼。`TW_KLINE_COLLECT_ENABLED=false` 可關閉；
   `FUBON_SIDECAR_TOKEN` 為空時工作會自動略過。
+- 預設不累積選擇權（合約太多）：watchlist 裡的選擇權合約與 `TWFutures:TXO` 這類選擇權商品都會略過。
+  要保留少數合約時，把合約列在 `TW_KLINE_COLLECT_SYMBOLS`，例如
+  `TWFutures:TXO23000H6,TWFutures:TXO23000T6`。
 - 每個（代碼、盤別、交易日）的結果寫在 `qd_tw_kline_collect_status`：`success`、`failed`
   （下一次排程重抓）或 `missed`（重試期限已過，log 會出現 `TW K-line gap` warning）。查缺口：
   `SELECT * FROM qd_tw_kline_collect_status WHERE status <> 'success' ORDER BY trade_date DESC;`

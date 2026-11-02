@@ -32,6 +32,10 @@ from app.data_sources.tw_futures import (
     parse_tw_futures_symbol,
     tw_futures_data_symbol,
 )
+from app.data_sources.tw_options import (
+    OPTIONS_UNSUPPORTED_ERROR as TW_OPTIONS_UNSUPPORTED_ERROR,
+    first_option_instrument,
+)
 from app.services.instrument_rules import (
     InstrumentRulesProvider,
     get_instrument_rules_provider,
@@ -362,6 +366,7 @@ class StrategyV2BacktestService:
             raise StrategyV2ContractError("strategyV2.invalidDateRange")
         if initial_capital <= 0:
             raise StrategyV2ContractError("strategyV2.invalidInitialCapital")
+        reject_tw_options(manifest_instruments(manifest.metadata()))
 
         candidates, universe_id = self.resolve_candidates(
             user_id=user_id,
@@ -371,6 +376,7 @@ class StrategyV2BacktestService:
         )
         if not candidates:
             raise StrategyV2ContractError("strategyV2.universeHasNoData")
+        reject_tw_options(candidates)
         tw_futures_assumptions = _apply_tw_futures_session(candidates, session)
 
         instrument_products = _attach_catalog_products(candidates)
@@ -1112,6 +1118,22 @@ def _validate_warmup_history(frequency_frames, warmup_bars: int, start_date: dat
 
 # Session-bound markets: intraday warmup needs extra calendar days.
 _SESSION_STOCK_MARKETS = frozenset({"USStock", "HKStock", "AStock", "TWStock", "TWFutures"})
+
+
+def manifest_instruments(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Static instruments a manifest names: universe, subscriptions and benchmark."""
+    items: list[dict[str, Any]] = list((metadata.get("universe") or {}).get("instruments") or [])
+    for subscription in metadata.get("subscriptions") or []:
+        items.extend(subscription.get("instruments") or [])
+    if isinstance(metadata.get("benchmark"), dict):
+        items.append(metadata["benchmark"])
+    return [item for item in items if isinstance(item, dict)]
+
+
+def reject_tw_options(instruments: Iterable[dict[str, Any]]) -> None:
+    """Refuse TAIFEX option contracts: the engine models no premium, expiry, exercise or margin."""
+    if first_option_instrument(instruments):
+        raise StrategyV2ContractError(TW_OPTIONS_UNSUPPORTED_ERROR)
 
 
 def _apply_tw_futures_session(candidates: list[dict[str, Any]], session: str) -> dict[str, Any]:

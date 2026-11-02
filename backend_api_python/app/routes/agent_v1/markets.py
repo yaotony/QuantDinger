@@ -190,6 +190,63 @@ def data_coverage():
     return envelope(coverage)
 
 
+@agent_v1_bp.route("/option-chain", methods=["GET"])
+@agent_required(SCOPE_R)
+def option_chain():
+    """TAIFEX option chain: call and put quotes per strike (market data only).
+
+    Query params:
+        product        option product, e.g. TXO or a weekly TX1/TX2/TX4/TX5 (required)
+        expiry_month   YYYY-MM (optional; default the nearest unexpired series)
+        strikes        strikes to quote, 1..25 (default 10), nearest to ``center``
+        center         strike to centre on (optional; default the underlying price)
+
+    Options cannot be backtested or deployed; the response carries
+    ``backtestSupported: false``.
+    """
+    from app.services.tw_option_chain import (
+        DEFAULT_STRIKES,
+        MAX_STRIKES,
+        OptionChainError,
+        OptionChainNotFound,
+        get_tw_option_chain_service,
+    )
+    from app.data_sources.tw_stock import FubonSidecarError
+
+    market = "TWFutures"
+    if not market_allowed(market):
+        return error(403, f"Market not allowed: {market}", http=403)
+    product = (request.args.get("product") or "").strip().upper()
+    if not product:
+        return error(400, "product is required")
+    strikes = clip_int(request.args.get("strikes"), default=DEFAULT_STRIKES, lo=1, hi=MAX_STRIKES)
+    center_raw = (request.args.get("center") or "").strip()
+    center = None
+    if center_raw:
+        try:
+            center = float(center_raw)
+        except ValueError:
+            return error(400, "center must be a number")
+        if not math.isfinite(center) or center <= 0:
+            return error(400, "center must be a positive number")
+
+    try:
+        chain = get_tw_option_chain_service().get_chain(
+            product,
+            request.args.get("expiry_month"),
+            strikes=strikes,
+            center=center,
+            symbol_allowed=instrument_allowed,
+        )
+    except OptionChainNotFound as exc:
+        return error(404, str(exc), http=404)
+    except OptionChainError as exc:
+        return error(400, str(exc))
+    except FubonSidecarError as exc:
+        return error(503, "option chain unavailable", details=str(exc), retriable=True, http=503)
+    return envelope(chain)
+
+
 @agent_v1_bp.route("/price", methods=["GET"])
 @agent_required(SCOPE_R)
 def price():

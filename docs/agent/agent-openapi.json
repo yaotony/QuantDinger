@@ -174,6 +174,69 @@
           }
         }
       },
+      "OptionQuote": {
+        "type": "object",
+        "nullable": true,
+        "description": "One option contract's quote. available is false (and the price fields absent) when the sidecar has no quote.",
+        "required": ["symbol", "available"],
+        "properties": {
+          "symbol":         { "type": "string", "description": "Contract code, e.g. TXO23000H6" },
+          "available":      { "type": "boolean" },
+          "name":           { "type": "string" },
+          "lastPrice":      { "type": "number", "nullable": true },
+          "change":         { "type": "number", "nullable": true },
+          "changePercent":  { "type": "number", "nullable": true },
+          "open":           { "type": "number", "nullable": true },
+          "high":           { "type": "number", "nullable": true },
+          "low":            { "type": "number", "nullable": true },
+          "previousClose":  { "type": "number", "nullable": true },
+          "referencePrice": { "type": "number", "nullable": true },
+          "volume":         { "type": "number", "nullable": true },
+          "time":           { "type": "integer", "nullable": true, "description": "Unix seconds of the last update" }
+        }
+      },
+      "OptionChain": {
+        "type": "object",
+        "description": "Returned in `data` by GET /option-chain.",
+        "required": [
+          "market", "product", "productName", "expiryMonth", "expiryDate", "multiplier", "underlying",
+          "center", "strikeCount", "returnedStrikes", "truncated", "backtestSupported", "asOf", "strikes"
+        ],
+        "properties": {
+          "market":            { "type": "string", "enum": ["TWFutures"] },
+          "product":           { "type": "string" },
+          "productName":       { "type": "string" },
+          "expiryMonth":       { "type": "string", "description": "YYYY-MM" },
+          "expiryDate":        { "type": "string", "nullable": true, "description": "Last trading day (YYYY-MM-DD)" },
+          "multiplier":        { "type": "number", "nullable": true, "description": "TWD per index point" },
+          "underlying": {
+            "type": "object",
+            "required": ["symbol", "price"],
+            "properties": {
+              "symbol": { "type": "string", "nullable": true, "description": "e.g. TWStock:IX0001" },
+              "price":  { "type": "number", "nullable": true }
+            }
+          },
+          "center":            { "type": "number" },
+          "strikeCount":       { "type": "integer", "description": "Strikes listed for the series" },
+          "returnedStrikes":   { "type": "integer" },
+          "truncated":         { "type": "boolean" },
+          "backtestSupported": { "type": "boolean", "enum": [false] },
+          "asOf":              { "type": "integer", "description": "Unix seconds" },
+          "strikes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["strike", "call", "put"],
+              "properties": {
+                "strike": { "type": "integer" },
+                "call":   { "$ref": "#/components/schemas/OptionQuote" },
+                "put":    { "$ref": "#/components/schemas/OptionQuote" }
+              }
+            }
+          }
+        }
+      },
       "DataCoverage": {
         "type": "object",
         "description": "Returned in `data` by GET /data-coverage. The range verdict is produced by the same rule as the POST /backtest/run precheck and the job-time check.",
@@ -773,6 +836,29 @@
         }
       }
     },
+    "/api/agent/v1/option-chain": {
+      "get": {
+        "summary": "TAIFEX option chain (market data only)",
+        "description": "Call and put quotes per strike for one TWFutures option product (TXO, weekly TX1/TX2/TX4/TX5) and expiry month, from the read-only Fubon sidecar. Contract codes are product + five-digit strike + month letter (calls A-L, puts M-X) + last digit of the year, e.g. TXO23000H6 (August 2026 call) and TXO23000T6 (August 2026 put). Quotes come from the sidecar, which carries no bid/ask. Contracts outside the token's instrument allowlist are omitted unless the product itself is allowed. Options cannot be backtested or deployed (strategyV2.optionsBacktestUnsupported).",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "query", "name": "product", "required": true, "schema": { "type": "string" }, "description": "Option product, e.g. TXO or TX1." },
+          { "in": "query", "name": "expiry_month", "required": false, "schema": { "type": "string", "pattern": "^\\d{4}-?\\d{2}$" }, "description": "YYYY-MM. Defaults to the nearest unexpired series." },
+          { "in": "query", "name": "strikes", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 25, "default": 10 }, "description": "Number of strikes to quote, nearest to center." },
+          { "in": "query", "name": "center", "required": false, "schema": { "type": "number" }, "description": "Strike to centre on. Defaults to the underlying price, else the middle listed strike." }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/OptionChain" } } } } }
+          },
+          "400": { "description": "Missing product or malformed expiry_month / center" },
+          "403": { "description": "TWFutures not allowed for this token" },
+          "404": { "description": "No listed (or allowed) series for the product and month" },
+          "503": { "description": "Fubon sidecar unavailable" }
+        }
+      }
+    },
     "/api/agent/v1/price": {
       "get": {
         "summary": "Latest price",
@@ -949,7 +1035,7 @@
         "parameters": [
           { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
         ],
-        "description": "Runs either inline `code` or a saved strategy source (`sourceId`, optional `sourceVersion`; latest version when omitted). The resolved version is pinned at submit time and reported as `strategySource` on the receipt and the job result. Compiles the strategy and checks the date range plus indicator warmup against the market/timeframe limit before a job is accepted or billed. An oversized range returns 400 with `message` `strategyV2.backtestRangeLimit` and `details` containing the limit, warmup days, and suggested dates.",
+        "description": "Runs either inline `code` or a saved strategy source (`sourceId`, optional `sourceVersion`; latest version when omitted). The resolved version is pinned at submit time and reported as `strategySource` on the receipt and the job result. Compiles the strategy and checks the date range plus indicator warmup against the market/timeframe limit before a job is accepted or billed. An oversized range returns 400 with `message` `strategyV2.backtestRangeLimit` and `details` containing the limit, warmup days, and suggested dates. TAIFEX option contracts (e.g. `TWFutures:TXO23000H6`) are market data only: a strategy naming one returns 400 with `message` `strategyV2.optionsBacktestUnsupported` and `details.instrument`.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BacktestRequest" } } } },
         "responses": {
           "202": {

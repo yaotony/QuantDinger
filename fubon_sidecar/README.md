@@ -103,6 +103,9 @@ PostgreSQL table `qd_tw_klines`:
   `TWStock:IX0001,TWStock:2330.TW,TWStock:0050.TW,TWFutures:TXF,TWFutures:MXF`) plus every
   `TWStock` / `TWFutures` symbol on any user watchlist. `TW_KLINE_COLLECT_ENABLED=false` turns the
   job off; it also skips itself while `FUBON_SIDECAR_TOKEN` is empty.
+- Options are not collected by default (there are too many contracts): option contracts on a
+  watchlist and option products such as `TWFutures:TXO` are skipped. To keep a few, list the
+  contracts in `TW_KLINE_COLLECT_SYMBOLS`, e.g. `TWFutures:TXO23000H6,TWFutures:TXO23000T6`.
 - Each (symbol, session, trading day) outcome is written to `qd_tw_kline_collect_status`:
   `success`, `failed` (retried by the next run) or `missed` (the retry window closed; logged as a
   `TW K-line gap` warning). Find gaps with

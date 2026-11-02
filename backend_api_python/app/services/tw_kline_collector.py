@@ -18,7 +18,8 @@ or ``missed`` (the retry window closed; a gap that is logged as a warning).
 Non-trading days (``exchange_calendars`` XTAI) are never fetched.
 
 The collection list is ``TW_KLINE_COLLECT_SYMBOLS`` plus every Taiwan symbol on a
-user watchlist.
+user watchlist. Option contracts (``TXO23000H6``) are collected only when listed
+in ``TW_KLINE_COLLECT_SYMBOLS``; watchlist options are skipped.
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ import pandas as pd
 
 # near_month_contracts is the near-month rule shared with the TWFutures data source.
 from app.data_sources.tw_futures_contracts import near_month_contracts
+from app.data_sources.tw_options import OPTION_RE, option_product
 from app.data_sources.tw_stock import FubonSidecarError, normalize_tw_symbol
 from app.services.tw_kline_store import (
     MARKET_FUTURES,
@@ -98,12 +100,19 @@ def _append_unique(items: List[str], value: str) -> None:
         items.append(value)
 
 
-def parse_collect_symbols(entries: Iterable[Tuple[str, str]]) -> CollectTargets:
+def parse_collect_symbols(
+    entries: Iterable[Tuple[str, str]],
+    *,
+    allow_options: bool = True,
+) -> CollectTargets:
     """Turn (market, symbol) pairs into stock codes and futures products / contracts.
 
     ``TWStock`` symbols use the sidecar code (``2330.TW`` -> ``2330``). ``TWFutures``
     symbols are a product (``TXF``, collected as near and next month) or an explicit
-    contract (``TXFH6``). Anything else is ignored with a log line.
+    contract (``TXFH6``). An option contract (``TXO23000H6``) is collected like a
+    contract only when ``allow_options`` is set (``TW_KLINE_COLLECT_SYMBOLS``);
+    option products (``TXO``) are never expanded, there are too many strikes.
+    Anything else is ignored with a log line.
     """
     targets = CollectTargets()
     for market, raw_symbol in entries:
@@ -116,10 +125,15 @@ def parse_collect_symbols(entries: Iterable[Tuple[str, str]]) -> CollectTargets:
                 _append_unique(targets.stock_codes, code)
                 continue
         elif market == MARKET_FUTURES:
-            if _FUTURES_PRODUCT_RE.match(symbol):
+            if option_product(symbol) is not None:
+                pass  # an option product: never expanded into every strike
+            elif _FUTURES_PRODUCT_RE.match(symbol):
                 _append_unique(targets.futures_products, symbol)
                 continue
-            if _FUTURES_CONTRACT_RE.match(symbol):
+            elif _FUTURES_CONTRACT_RE.match(symbol):
+                _append_unique(targets.futures_contracts, symbol)
+                continue
+            elif OPTION_RE.match(symbol) and allow_options:
                 _append_unique(targets.futures_contracts, symbol)
                 continue
         logger.info("TW K-line collection: ignored unsupported symbol %s:%s", market, raw_symbol)
@@ -284,11 +298,21 @@ class TWKlineCollector:
     # -------------------------------------------------------------- targets
     def resolve_targets(self, configured: Optional[List[Tuple[str, str]]] = None) -> CollectTargets:
         entries = list(configured if configured is not None else configured_symbol_entries())
+        targets = parse_collect_symbols(entries)
         try:
-            entries.extend(self.repository.watchlist_symbols())
+            # Watchlist options are not accumulated (too many contracts); list them
+            # in TW_KLINE_COLLECT_SYMBOLS instead.
+            watched = parse_collect_symbols(self.repository.watchlist_symbols(), allow_options=False)
         except Exception as exc:
             logger.warning("TW K-line collection: watchlist symbols unavailable: %s", exc)
-        return parse_collect_symbols(entries)
+            return targets
+        for code in watched.stock_codes:
+            _append_unique(targets.stock_codes, code)
+        for product in watched.futures_products:
+            _append_unique(targets.futures_products, product)
+        for contract in watched.futures_contracts:
+            _append_unique(targets.futures_contracts, contract)
+        return targets
 
     # -------------------------------------------------------------- run
     def run(self, now: Optional[datetime] = None, targets: Optional[CollectTargets] = None) -> Dict[str, Any]:

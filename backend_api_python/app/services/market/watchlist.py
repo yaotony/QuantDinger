@@ -16,8 +16,9 @@ logger = get_logger(__name__)
 VALID_MARKETS = frozenset({
     "Crypto", "USStock", "CNStock", "HKStock", "Forex", "Futures", "MOEX", "TWStock", "TWFutures",
 })
-# Continuous near month (TXF) or one contract month (TXFH6).
-TW_FUTURES_PATTERN = re.compile(r"^[A-Z]{3}([A-L]\d)?$")
+# Continuous near month (TXF), one contract month (TXFH6) or one option
+# contract (TXO23000H6: strike, month letter A-L call / M-X put, year digit).
+TW_FUTURES_PATTERN = re.compile(r"^([A-Z]{3}([A-L]\d)?|[A-Z][A-Z0-9]{2}\d{5}[A-X]\d)$")
 CN_A_SHARE_PATTERN = re.compile(r"^\d{6}$")
 TW_STOCK_PATTERN = re.compile(r"^(\d{4}[0-9A-Z]{0,2}\.TWO?|IX\d{4})$")
 
@@ -51,7 +52,8 @@ def validate_watchlist_pair(market: str, symbol: str) -> Optional[str]:
     if market == "TWFutures" and not TW_FUTURES_PATTERN.match(symbol.upper()):
         return (
             f"Taiwan futures symbol '{symbol}' must be a product code such as TXF "
-            "(continuous near month) or a contract month such as TXFH6."
+            "(continuous near month), a contract month such as TXFH6 or an option "
+            "contract such as TXO23000H6."
         )
     if market == "Crypto" and "/" not in symbol:
         return f"Crypto symbol '{symbol}' must be a BASE/QUOTE pair (e.g. BTC/USDT)."

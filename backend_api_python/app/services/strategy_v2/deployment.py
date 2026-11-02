@@ -21,6 +21,7 @@ from app.utils.db import get_db_connection
 from app.utils.trading_venue_visibility import is_trading_venue_enabled
 
 from .contract import PLATFORM_MAX_LEVERAGE, StrategyV2ContractError, compile_strategy_v2
+from .service import manifest_instruments, reject_tw_options
 
 
 class StrategyV2DeploymentService:
@@ -42,6 +43,8 @@ class StrategyV2DeploymentService:
         }
         program = compile_strategy_v2(str(source.get("code") or ""))
         manifest = program.manifest
+        # Option contracts are market data only: no paper or live deployment.
+        reject_tw_options(manifest_instruments(manifest.metadata()))
         source_metadata = self._object(source.get("metadata"))
         adaptation = self._object(source_metadata.get("marketplace_adaptation"))
         if adaptation.get("requires_backtest") and not self._has_current_version_backtest(
