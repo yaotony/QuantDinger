@@ -25,7 +25,18 @@ from app.services.backtest_limits import (
 )
 from app.services.fundamental_data import get_fundamental_data_service
 from app.services.funding_rates import get_funding_rate_history_service
-from app.services.instrument_rules import InstrumentRulesProvider, get_instrument_rules_provider
+from app.data_sources.tw_futures import (
+    DEFAULT_SESSION as TW_FUTURES_DEFAULT_SESSION,
+    ROLL_METHOD as TW_FUTURES_ROLL_METHOD,
+    normalize_session as normalize_tw_futures_session,
+    parse_tw_futures_symbol,
+    tw_futures_data_symbol,
+)
+from app.services.instrument_rules import (
+    InstrumentRulesProvider,
+    get_instrument_rules_provider,
+    tw_futures_rules,
+)
 from app.services.market.instrument_products import PRODUCT_CRYPTO
 from app.services.market.product_catalog import get_catalog_product
 from app.services.universe import UniverseService, get_universe_service
@@ -331,6 +342,7 @@ class StrategyV2BacktestService:
         analysis_only: bool = False,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
         funding_mode: str = FUNDING_MODE_NOT_MODELED,
+        session: str = TW_FUTURES_DEFAULT_SESSION,
     ) -> tuple[int | None, dict[str, Any]]:
         started_at = perf_counter()
 
@@ -340,6 +352,10 @@ class StrategyV2BacktestService:
 
         emit("preparing", 5)
         funding_mode = normalize_funding_mode(funding_mode)
+        try:
+            session = normalize_tw_futures_session(session)
+        except ValueError as exc:
+            raise StrategyV2ContractError(str(exc)) from exc
         program = compile_strategy_v2(code)
         manifest = program.manifest
         if end_date <= start_date:
@@ -355,6 +371,7 @@ class StrategyV2BacktestService:
         )
         if not candidates:
             raise StrategyV2ContractError("strategyV2.universeHasNoData")
+        tw_futures_assumptions = _apply_tw_futures_session(candidates, session)
 
         instrument_products = _attach_catalog_products(candidates)
 
@@ -670,6 +687,7 @@ class StrategyV2BacktestService:
             "drivingFrequency": frequency,
             "frequencies": list(manifest.frequencies),
             "higherTimeframePolicy": "completed_before_driving_bar_close",
+            **({"twFutures": tw_futures_assumptions} if tw_futures_assumptions else {}),
         }
 
         persistence_at = perf_counter()
@@ -756,7 +774,7 @@ class StrategyV2BacktestService:
         def fetch(member: dict[str, Any]):
             frame = self.frame_fetcher(
                 member["market"],
-                member["symbol"],
+                member.get("data_symbol") or member["symbol"],
                 frequency,
                 start_date,
                 end_date,
@@ -807,7 +825,7 @@ class StrategyV2BacktestService:
         def fetch(member: dict[str, Any], frequency: str):
             frame = self.frame_fetcher(
                 member["market"],
-                member["symbol"],
+                member.get("data_symbol") or member["symbol"],
                 frequency,
                 start_dates[frequency],
                 end_date,
@@ -1092,8 +1110,38 @@ def _validate_warmup_history(frequency_frames, warmup_bars: int, start_date: dat
     validate_warmup(frequency_frames, warmup_bars, start_date)
 
 
-# Session-bound stock markets: intraday warmup needs extra calendar days.
-_SESSION_STOCK_MARKETS = frozenset({"USStock", "HKStock", "AStock", "TWStock"})
+# Session-bound markets: intraday warmup needs extra calendar days.
+_SESSION_STOCK_MARKETS = frozenset({"USStock", "HKStock", "AStock", "TWStock", "TWFutures"})
+
+
+def _apply_tw_futures_session(candidates: list[dict[str, Any]], session: str) -> dict[str, Any]:
+    """Route TWFutures members to the session's data symbol; return result assumptions.
+
+    The instrument key (``TWFutures:TXF``) is unchanged, so orders and rules keep
+    their identity; only the provider symbol carries ``@regular``.
+    """
+    contracts: dict[str, Any] = {}
+    for member in candidates:
+        if str(member.get("market") or "") != "TWFutures":
+            continue
+        symbol = str(member.get("symbol") or "")
+        member["data_symbol"] = tw_futures_data_symbol(symbol, session)
+        rules = tw_futures_rules(str(member.get("key") or f"TWFutures:{symbol}"))
+        parsed = parse_tw_futures_symbol(symbol)
+        contracts[symbol] = {
+            "continuous": bool(parsed and parsed.continuous),
+            "contractMultiplier": rules.contract_size if rules else None,
+            "tickSize": rules.price_tick if rules else None,
+        }
+    if not contracts:
+        return {}
+    return {
+        "session": session,
+        "rollMethod": TW_FUTURES_ROLL_METHOD,
+        "nightSessionTradingDay": "next_trading_day",
+        "marginModel": "full_notional_cash",
+        "contracts": contracts,
+    }
 
 
 def _warmup_calendar_days(frequency: str, warmup_bars: int, candidates=()) -> int:

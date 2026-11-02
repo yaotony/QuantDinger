@@ -40,9 +40,10 @@ def live_history_days(
     seconds = frequency_seconds(frequency) * bars
     days = max(1, int(math.ceil(seconds / 86_400)))
     normalized = str(frequency or "").strip().lower()
+    session_markets = {"USStock", "HKStock", "CNStock", "AStock", "TWStock", "TWFutures"}
     stock_session = any(
-        str(item.get("market") or "") in {"USStock", "HKStock", "CNStock", "AStock", "TWStock"}
-        or str(item.get("underlying_market") or "") in {"USStock", "HKStock", "CNStock", "AStock", "TWStock"}
+        str(item.get("market") or "") in session_markets
+        or str(item.get("underlying_market") or "") in session_markets
         or str(item.get("api_family") or "").strip().lower() == "stock"
         for item in candidates
     )

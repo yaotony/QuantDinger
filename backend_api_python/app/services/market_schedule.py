@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -14,13 +15,25 @@ CALENDAR_BY_MARKET = {
     "AStock": "XSHG",
     "CNStock": "XSHG",
     "TWStock": "XTAI",
+    # TAIFEX trading days follow the TWSE (XTAI) calendar; the futures hours
+    # differ and are handled by the TWFutures helpers below.
+    "TWFutures": "XTAI",
 }
 
 # Markets whose provider labels daily bars at local midnight instead of UTC.
 _LOCAL_DAILY_LABEL_TZ = {
     "HKStock": "Asia/Hong_Kong",
     "TWStock": "Asia/Taipei",
+    "TWFutures": "Asia/Taipei",
 }
+
+# TAIFEX index futures hours, Asia/Taipei. The night session opens on a trading
+# day and runs past midnight; it belongs to the next trading day.
+TW_FUTURES_TZ = "Asia/Taipei"
+TW_FUTURES_DAY_OPEN = time(8, 45)
+TW_FUTURES_DAY_CLOSE = time(13, 45)
+TW_FUTURES_NIGHT_OPEN = time(15, 0)
+TW_FUTURES_NIGHT_CLOSE = time(5, 0)
 
 
 class MarketScheduleError(RuntimeError):
@@ -74,11 +87,48 @@ def equity_daily_execution_session(market: str, regular_only: bool = True, now: 
     return _python_utc(calendar.previous_session(today))
 
 
+def _tw_futures_utc(day: date, clock: time) -> datetime:
+    return datetime.combine(day, clock, tzinfo=ZoneInfo(TW_FUTURES_TZ)).astimezone(timezone.utc)
+
+
+def is_tw_futures_bar_close(closed_at: datetime, calendar=None) -> bool:
+    """Whether a UTC boundary closes a bar inside a TAIFEX day or night session.
+
+    A night session crosses midnight, so a boundary at 01:00 belongs to the
+    night session opened the previous evening when that evening was a trading day.
+    """
+    boundary = _utc(closed_at)
+    calendar = calendar or _calendar("TWFutures")
+    local_day = boundary.astimezone(ZoneInfo(TW_FUTURES_TZ)).date()
+    for opened in (local_day, local_day - timedelta(days=1)):
+        if not calendar.is_session(pd.Timestamp(opened)):
+            continue
+        night_open = _tw_futures_utc(opened, TW_FUTURES_NIGHT_OPEN)
+        night_close = _tw_futures_utc(opened + timedelta(days=1), TW_FUTURES_NIGHT_CLOSE)
+        if night_open < boundary <= night_close:
+            return True
+    if calendar.is_session(pd.Timestamp(local_day)):
+        day_open = _tw_futures_utc(local_day, TW_FUTURES_DAY_OPEN)
+        day_close = _tw_futures_utc(local_day, TW_FUTURES_DAY_CLOSE)
+        if day_open < boundary <= day_close:
+            return True
+    return False
+
+
+def _session_close_utc(market: str, calendar, session) -> datetime:
+    """Close of a trading day; TWFutures closes with its 13:45 day session."""
+    if str(market or "").strip() == "TWFutures":
+        return _tw_futures_utc(pd.Timestamp(session).date(), TW_FUTURES_DAY_CLOSE)
+    return _python_utc(calendar.session_close(session))
+
+
 def is_equity_bar_close(market: str, closed_at: datetime) -> bool:
     """Return whether a UTC boundary closes a bar inside an equity session."""
     normalized_market = str(market or "").strip()
     if normalized_market not in CALENDAR_BY_MARKET:
         return True
+    if normalized_market == "TWFutures":
+        return is_tw_futures_bar_close(closed_at)
     boundary = _utc(closed_at)
     calendar = _calendar(normalized_market)
     session_date = pd.Timestamp(boundary).tz_convert(calendar.tz).date()
@@ -112,7 +162,7 @@ def latest_completed_session(
         pd.Timestamp(current.date()),
     )
     delay = timedelta(minutes=max(0, int(data_delay_minutes)))
-    completed = [session for session in sessions if _python_utc(calendar.session_close(session)) + delay <= current]
+    completed = [session for session in sessions if _session_close_utc(market, calendar, session) + delay <= current]
     if not completed:
         raise MarketScheduleError("portfolio.noCompletedMarketSession")
     return _python_utc(completed[-1]).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -147,7 +197,7 @@ def next_rebalance_run(
     )
     delay = timedelta(minutes=max(0, int(data_delay_minutes)))
     for index, session in enumerate(sessions):
-        run_at = _python_utc(calendar.session_close(session)) + delay
+        run_at = _session_close_utc(market, calendar, session) + delay
         if run_at <= current or not _is_period_end(sessions, index, clean_frequency):
             continue
         return run_at.replace(tzinfo=None)

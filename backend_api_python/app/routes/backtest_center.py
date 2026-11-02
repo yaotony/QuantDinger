@@ -32,6 +32,7 @@ from app.services.strategy_v2.backtest_report import (
     report_filename,
     resolve_report_language,
 )
+from app.data_sources.tw_futures import normalize_session as normalize_tw_futures_session
 from app.services.strategy_v2.funding import normalize_funding_mode
 from app.utils.auth import login_required
 from app.utils.language import detect_request_language
@@ -117,6 +118,7 @@ def _prepare_run(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
             payload.get("instrumentRulesSnapshotId") or ""
         ).strip(),
         "funding_mode": normalize_funding_mode(payload.get("fundingMode")),
+        "session": normalize_tw_futures_session(payload.get("session")),
     }
 
 
@@ -194,6 +196,7 @@ def _job_payload(prepared: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         "params": prepared["params"],
         "instrumentRulesSnapshotId": prepared["instrument_rules_snapshot_id"],
         "fundingMode": prepared["funding_mode"],
+        "session": prepared["session"],
         "persist": bool(payload.get("persist", True)),
         "sourceId": prepared["source_id"],
         "strategyId": prepared["strategy_id"],

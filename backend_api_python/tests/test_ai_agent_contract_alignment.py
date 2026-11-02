@@ -201,6 +201,12 @@ def test_agent_openapi_backtest_request_matches_accepted_fields():
     assert funding["enum"] == list(FUNDING_MODES)
     assert funding["default"] == FUNDING_MODE_NOT_MODELED
 
+    from app.data_sources.tw_futures import DEFAULT_SESSION, SESSIONS
+
+    session = request_schema["properties"]["session"]
+    assert session["enum"] == list(SESSIONS)
+    assert session["default"] == DEFAULT_SESSION
+
 
 def test_agent_openapi_documents_backtest_source_contract():
     from app.routes.agent_v1 import backtests

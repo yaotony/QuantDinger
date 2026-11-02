@@ -162,12 +162,20 @@ Content-Type: application/json
 | 台湾上市（TWSE）股票／ETF | <code>TWStock:2330.TW</code>、<code>TWStock:0050.TW</code> |
 | 台湾上柜（TPEx）股票 | <code>TWStock:6488.TWO</code> |
 | 台湾指数 | <code>TWStock:IX0001</code>（加权指数）、<code>TWStock:IX0043</code>（柜买指数） |
+| 台湾期货（期交所），连续近月 | <code>TWFutures:TXF</code>、<code>TWFutures:MXF</code>、<code>TWFutures:TMF</code>、<code>TWFutures:EXF</code>、<code>TWFutures:FXF</code> |
+| 台湾期货，指定月份合约 | <code>TWFutures:TXFH6</code>（商品代码 + 月份字母 <code>A</code>-<code>L</code> 代表 1-12 月 + 年份个位数：2026 年 8 月） |
 
 系统也会规范化部分别名，例如 <code>600519.XSHG</code> → <code>CNStock:600519.SH</code>、<code>BTCUSDT</code> → <code>BTC/USDT</code>。没有市场前缀时，以 <code>.TW</code>／<code>.TWO</code> 结尾的代码与 <code>IX</code> 指数代码会被推断为 <code>TWStock</code>。
 
 <code>TWStock</code> 数据来自只读的富邦行情 sidecar，只支持研究、回测与模拟盘，实盘策略会被拒绝。日／周 K 回测区间最长 1 年（含指标预热）。分 K 与小时 K 由每日排程累积在 PostgreSQL 的 1 分 K（加上 sidecar 近 5 个交易日）重新取样，因此使用默认的回测区间上限；历史从排程第一次执行的交易日开始，data-coverage 会回报实际最早的一根。累积的代码（<code>TW_KLINE_COLLECT_SYMBOLS</code> 加上自选列表）见 [富邦 sidecar 说明](../../fubon_sidecar/README_CN.md)。
 
-券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code>、<code>MOEX</code> 和 <code>TWStock</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。只有通过交易所路由的 <code>Crypto</code> 身份才携带 <code>@venue:market_type</code> 后缀。
+<code>TWFutures</code>（市场别名 <code>TAIFEX</code>、<code>TWF</code>）提供期交所指数期货，只支持研究、回测与模拟盘，实盘策略会被拒绝。所有周期都由每日排程按月份合约存储的 1 分 K（加上 sidecar 当前盘别）组成，历史从开始累积的那天算起，data-coverage 会回报实际最早的一根。1 小时以上周期回测区间最长 2 年（含指标预热），更短周期使用默认上限。
+
+- **交易时段**：日盘 08:45-13:45、夜盘 15:00-次日 05:00（台北时间）。交易日采用 XTAI 日历，夜盘归属**下一个**交易日（期交所定义），因此日 K 从前一晚 15:00 开盘到 13:45 收盘，时间标在该交易日的台北午夜。回测选项 <code>session</code> 为 <code>all</code>（默认，日盘 + 夜盘）或 <code>regular</code>（仅日盘）。
+- **近月与换月**：合约最后交易日为该月第三个星期三（遇假日顺延到下一个交易日），当天 13:30 后即不再是近月，当晚夜盘已交易下个月合约。连续代码的每一根 K 线都取当时的近月合约；不做价差调整，换月时价格会跳动一个月份价差，结果中以 <code>executionAssumptions.twFutures.rollMethod == "front_month_unadjusted"</code> 标示。要研究单一合约、不换月时，请用指定月份代码。
+- **契约乘数**：数量以指数单位计，一口等于乘数：<code>order("TWFutures:TXF", 200)</code> 为买进一口台指期。下单数量向下取整到整口。损益与按比例计算的手续费都依乘数计算（TXF 200、MXF 50、TMF 10、EXF 4,000、FXF 1,000 元／点；最小跳动 1、1、1、0.05、0.2）。不模拟保证金：持仓以全部名目价值占用现金，请据此设定初始资金或杠杆。<code>executionAssumptions.twFutures</code> 列出盘别、换月方式与各标的的乘数和跳动点。
+
+券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code>、<code>MOEX</code>、<code>TWStock</code> 和 <code>TWFutures</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。只有通过交易所路由的 <code>Crypto</code> 身份才携带 <code>@venue:market_type</code> 后缀。
 
 为避免歧义，生产策略应写完整市场前缀。Crypto 未写市场类型时默认为 spot。只有 swap 可以启用合约杠杆。能够解析市场名称并不代表一定有数据或支持实盘，实盘支持范围见第 18 节。
 
@@ -894,11 +902,12 @@ def rebalance(context, data):
   "leverage": 1,
   "params": {},
   "fundingMode": "not_modeled",
+  "session": "all",
   "persist": true
 }
 ~~~
 
-<code>fundingMode</code> 可省略，默认为 <code>not_modeled</code>；见下文“永续合约资金费”。
+<code>fundingMode</code> 可省略，默认为 <code>not_modeled</code>；见下文“永续合约资金费”。<code>session</code> 可省略，默认为 <code>all</code>，只影响 <code>TWFutures</code> 标的（<code>regular</code> 为仅日盘）。Agent Gateway 接受同一字段，MCP <code>submit_backtest</code> 的参数名为 <code>session</code>。
 
 还可以传 <code>sourceId</code> 或 <code>strategyId</code> 读取已保存源码。市场、标的和周期不能从请求覆盖。
 

@@ -86,7 +86,7 @@ def get_market_types():
     user-facing market lists stay in lock-step.
     """
     # Keep a stable UX order; CN/HK/TW near US; MOEX last (niche vs crypto/FX/futures).
-    desired_order = ['USStock', 'CNStock', 'HKStock', 'TWStock', 'Crypto', 'Forex', 'Futures', 'MOEX']
+    desired_order = ['USStock', 'CNStock', 'HKStock', 'TWStock', 'TWFutures', 'Crypto', 'Forex', 'Futures', 'MOEX']
     order_rank = {v: i for i, v in enumerate(desired_order)}
 
     def _normalize_item(x):

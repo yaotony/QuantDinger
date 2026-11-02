@@ -214,6 +214,7 @@ def test_catalog_sync_skips_unreachable_sidecar_and_keeps_crypto_status(monkeypa
         "fetch_tw_stock_symbols",
         lambda: fetch_tw_stock_symbols(_UnavailableSource()),
     )
+    monkeypatch.setattr(market_catalog_sync, "fetch_tw_futures_symbols", lambda: [])
     monkeypatch.setattr(
         market_catalog_sync,
         "_finish_run",

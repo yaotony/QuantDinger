@@ -243,6 +243,29 @@ def test_submit_rejects_unknown_funding_mode(client, submission, monkeypatch):
     submission.assert_not_called()
 
 
+def test_submit_forwards_tw_futures_session(client, submission, monkeypatch):
+    response = _post(
+        client, monkeypatch, _manifest("15m", warmup=96), "2024-01-01", "2024-06-30",
+        session="regular",
+    )
+
+    assert response.status_code == 202
+    assert submission.call_args.kwargs["request_payload"]["session"] == "regular"
+
+
+def test_submit_rejects_unknown_tw_futures_session(client, submission, monkeypatch):
+    response = _post(
+        client, monkeypatch, _manifest("15m", warmup=96), "2024-01-01", "2024-06-30",
+        session="night",
+    )
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["message"] == "strategyV2.twFuturesSessionUnsupported:night"
+    assert body["details"]["allowed"] == ["all", "regular"]
+    submission.assert_not_called()
+
+
 def _range_exception() -> BacktestRangeLimitError:
     return BacktestRangeLimitError({
         "error_type": "BACKTEST_RANGE_LIMIT",

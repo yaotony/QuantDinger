@@ -89,6 +89,15 @@ _MARKET_LIMITS: Dict[str, Dict[str, BacktestRangePolicy]] = {
         "1D": BacktestRangePolicy(365, "1 year", "Taiwan stock daily data provider limit"),
         "1W": BacktestRangePolicy(365, "1 year", "Taiwan stock weekly data provider limit"),
     },
+    # Every TWFutures timeframe is rebuilt from the 1m bars accumulated in
+    # qd_tw_klines (about 1,100 bars per trading day with the night session), so
+    # higher timeframes are capped by the 1m rows loaded per run, not the engine.
+    "TWFutures": {
+        "1H": BacktestRangePolicy(730, "2 years", "Taiwan futures bars are resampled from stored 1m history"),
+        "4H": BacktestRangePolicy(730, "2 years", "Taiwan futures bars are resampled from stored 1m history"),
+        "1D": BacktestRangePolicy(730, "2 years", "Taiwan futures bars are resampled from stored 1m history"),
+        "1W": BacktestRangePolicy(730, "2 years", "Taiwan futures bars are resampled from stored 1m history"),
+    },
 }
 
 

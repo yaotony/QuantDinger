@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.data_sources.tw_futures import SESSIONS as TW_FUTURES_SESSIONS
+from app.data_sources.tw_futures import normalize_session as normalize_tw_futures_session
 from app.services.backtest_jobs import parse_backtest_date, run_backtest_job
 from app.services.backtest_limits import BacktestRangeLimitError
 from app.services.billing_service import BillingError
@@ -35,7 +37,7 @@ _BACKTEST_FIELDS = {
     "code", "sourceId", "sourceVersion",
     "startDate", "endDate", "initialCapital", "commission", "slippage",
     "leverageEnabled", "leverage", "params",
-    "instrumentRulesSnapshotId", "fundingMode",
+    "instrumentRulesSnapshotId", "fundingMode", "session",
 }
 # Server-resolved strategy source reference stored on the job request. The
 # runner loads code from this pinned, tenant-owned version snapshot.
@@ -154,6 +156,10 @@ def _validate_code(body: dict, code: str) -> tuple[Any, Any]:
         normalize_funding_mode(body.get("fundingMode"))
     except ValueError as exc:
         return None, error(400, str(exc), details={"allowed": list(FUNDING_MODES)})
+    try:
+        normalize_tw_futures_session(body.get("session"))
+    except ValueError as exc:
+        return None, error(400, str(exc), details={"allowed": list(TW_FUTURES_SESSIONS)})
     try:
         if float(body.get("initialCapital") or 10000) <= 0:
             raise ValueError

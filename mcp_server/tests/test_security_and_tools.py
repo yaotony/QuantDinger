@@ -579,6 +579,26 @@ def test_submit_backtest_forwards_funding_mode_only_when_set(monkeypatch, fresh_
         fresh_module.submit_backtest(code, "2024-01-01", "2024-06-30", funding_mode="fixed")
 
 
+def test_submit_backtest_forwards_tw_futures_session_only_when_set(monkeypatch, fresh_module):
+    captured = []
+
+    def fake_post(path, json=None, headers=None):
+        captured.append(json)
+        return {"job_id": "job-test"}
+
+    monkeypatch.setattr(fresh_module, "_post", fake_post)
+    code = "def initialize(context):\n    pass\n"
+    fresh_module.submit_backtest(code, "2026-01-01", "2026-03-31", idempotency_key="test-key")
+    fresh_module.submit_backtest(
+        code, "2026-01-01", "2026-03-31", session="Regular", idempotency_key="test-key-2",
+    )
+
+    assert "session" not in captured[0]
+    assert captured[1]["session"] == "regular"
+    with pytest.raises(ValueError, match="session"):
+        fresh_module.submit_backtest(code, "2026-01-01", "2026-03-31", session="night")
+
+
 def test_backtest_history_tools_are_read_only_gateway_reads(monkeypatch, fresh_module):
     from quantdinger_mcp.tool_contract import WRITE_TOOLS
 

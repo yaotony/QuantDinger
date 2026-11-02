@@ -115,6 +115,8 @@ submit_backtest(
 
 `funding_mode` is optional. When omitted, perpetual funding is not modeled (`executionAssumptions.fundingMode == "not_modeled"`). Pass `funding_mode="historical_rates"` to charge Binance USDⓈ-M perpetual funding settlements on open swap positions; trades then report `funding_fee`, the summary reports `totalFundingFee`, and `funding.missingPeriods` lists settlements that were missing and counted as zero.
 
+`session` is optional and only affects `TWFutures` instruments. When omitted, both the day session (08:45-13:45 Asia/Taipei) and the night session (15:00-05:00, counted in the next trading day) are used (`executionAssumptions.twFutures.session == "all"`). Pass `session="regular"` for the day session only. Continuous codes such as `TWFutures:TXF` follow the front month without price adjustment (`executionAssumptions.twFutures.rollMethod == "front_month_unadjusted"`).
+
 Market, symbol, and timeframe are not backtest parameters. They come from the compiled strategy manifest. Use `wait_for_job` or `stream_job_until_done` to obtain the result.
 
 The finished job's `result.runId` identifies the saved history record. Compare iterations with `list_backtest_runs` (filter by `source_id`, `strategy_id`, `symbol`, `market`, `timeframe`, `created_from`/`created_to`; page with `limit`/`offset` while `pagination.hasMore` is true). Each item carries `metrics` with `totalReturn`, `maxDrawdown`, `totalTrades`, `winRate`, and `totalFees`. Read one run's full result with `get_backtest_run(run_id)`, or the Markdown report shown to users with `get_backtest_report(run_id, language="en-US")` (`zh-CN` and `zh-TW` are also available; the text is in `data.markdown`).

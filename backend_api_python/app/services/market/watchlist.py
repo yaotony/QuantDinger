@@ -14,8 +14,10 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 VALID_MARKETS = frozenset({
-    "Crypto", "USStock", "CNStock", "HKStock", "Forex", "Futures", "MOEX", "TWStock",
+    "Crypto", "USStock", "CNStock", "HKStock", "Forex", "Futures", "MOEX", "TWStock", "TWFutures",
 })
+# Continuous near month (TXF) or one contract month (TXFH6).
+TW_FUTURES_PATTERN = re.compile(r"^[A-Z]{3}([A-L]\d)?$")
 CN_A_SHARE_PATTERN = re.compile(r"^\d{6}$")
 TW_STOCK_PATTERN = re.compile(r"^(\d{4}[0-9A-Z]{0,2}\.TWO?|IX\d{4})$")
 
@@ -45,6 +47,11 @@ def validate_watchlist_pair(market: str, symbol: str) -> Optional[str]:
         return (
             f"Taiwan symbol '{symbol}' must be 2330.TW (TWSE), 6488.TWO (TPEx) "
             "or an index such as IX0001."
+        )
+    if market == "TWFutures" and not TW_FUTURES_PATTERN.match(symbol.upper()):
+        return (
+            f"Taiwan futures symbol '{symbol}' must be a product code such as TXF "
+            "(continuous near month) or a contract month such as TXFH6."
         )
     if market == "Crypto" and "/" not in symbol:
         return f"Crypto symbol '{symbol}' must be a BASE/QUOTE pair (e.g. BTC/USDT)."

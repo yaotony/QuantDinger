@@ -160,12 +160,20 @@ A valid response contains <code>valid: true</code> and the manifest. Verify the 
 | Taiwan listed (TWSE) stock / ETF | <code>TWStock:2330.TW</code>, <code>TWStock:0050.TW</code> |
 | Taiwan OTC (TPEx) stock | <code>TWStock:6488.TWO</code> |
 | Taiwan index | <code>TWStock:IX0001</code> (TAIEX), <code>TWStock:IX0043</code> (TPEx index) |
+| Taiwan futures (TAIFEX), continuous near month | <code>TWFutures:TXF</code>, <code>TWFutures:MXF</code>, <code>TWFutures:TMF</code>, <code>TWFutures:EXF</code>, <code>TWFutures:FXF</code> |
+| Taiwan futures, one contract month | <code>TWFutures:TXFH6</code> (product + month letter <code>A</code>-<code>L</code> for January-December + last digit of the year: August 2026) |
 
 The parser also normalizes selected aliases, such as <code>600519.XSHG</code> to <code>CNStock:600519.SH</code> and <code>BTCUSDT</code> to <code>BTC/USDT</code>. Symbols ending in <code>.TW</code> or <code>.TWO</code> and <code>IX</code> index codes without a market prefix are inferred as <code>TWStock</code>.
 
 <code>TWStock</code> data comes from the read-only Fubon market data sidecar and supports research, backtests and paper trading only; live strategies are rejected. Daily and weekly backtests may span at most one year, warmup included. Minute and hourly bars are resampled from the 1m history that a daily job accumulates in PostgreSQL (plus the sidecar's latest 5 trading days), so they use the default range limits; the history starts on the first trading day the job ran, and the data-coverage answer reports the earliest available bar. See the [Fubon sidecar guide](../../fubon_sidecar/README.md#6-daily-k-line-accumulation) for the collected symbols (<code>TW_KLINE_COLLECT_SYMBOLS</code> plus watchlists).
 
-Broker-listed securities use <code>Market:Symbol</code> as their canonical strategy identity. Do not append a broker or listing venue such as <code>@NASDAQ</code>, <code>@NYSE</code>, <code>@HKEX</code>, or <code>@spot</code> to <code>USStock</code>, <code>HKStock</code>, <code>CNStock</code>, <code>Forex</code>, <code>Futures</code>, <code>MOEX</code>, or <code>TWStock</code> identifiers. The runtime keeps broker and listing metadata separately for execution. Only exchange-routed <code>Crypto</code> identities carry an <code>@venue:market_type</code> suffix.
+<code>TWFutures</code> (market aliases <code>TAIFEX</code> and <code>TWF</code>) covers TAIFEX index futures for research, backtests and paper trading only; live strategies are rejected. Every timeframe is built from the 1m bars the daily job stores per contract month (plus the sidecar's current session), so history starts when collection started; the data-coverage answer reports the first stored bar. Backtests may span at most two years for 1H and above (warmup included) and use the default limits below that.
+
+- **Sessions**: day 08:45-13:45 and night 15:00-05:00 (Asia/Taipei). Trading days follow the XTAI calendar and a night session belongs to the **next** trading day (TAIFEX definition), so a daily bar runs from the previous evening's 15:00 open to the 13:45 close and is labelled at Asia/Taipei midnight of that trading day. The backtest option <code>session</code> is <code>all</code> (default, day + night) or <code>regular</code> (day session only).
+- **Near month and roll**: a contract's last trading day is the third Wednesday of its month (the next trading day after a holiday); it stops being the near month at 13:30 that day, so that evening's night session already trades the next month. A continuous code reads, for each bar, the contract that was the near month then. No price adjustment is applied: prices jump by the calendar spread at each roll, and the result reports <code>executionAssumptions.twFutures.rollMethod == "front_month_unadjusted"</code>. Use a contract-month code to study one contract without rolls.
+- **Contract size**: quantities are index units, so one contract is the multiplier: <code>order("TWFutures:TXF", 200)</code> buys one TXF contract. Orders round down to whole contracts. Profit and percentage commission follow the multiplier (TXF 200, MXF 50, TMF 10, EXF 4,000, FXF 1,000 TWD per point; ticks 1, 1, 1, 0.05, 0.2). Margin is not modeled: a position uses its full notional as cash, so size initial capital or leverage accordingly. <code>executionAssumptions.twFutures</code> lists the session, roll method and per-instrument multiplier and tick.
+
+Broker-listed securities use <code>Market:Symbol</code> as their canonical strategy identity. Do not append a broker or listing venue such as <code>@NASDAQ</code>, <code>@NYSE</code>, <code>@HKEX</code>, or <code>@spot</code> to <code>USStock</code>, <code>HKStock</code>, <code>CNStock</code>, <code>Forex</code>, <code>Futures</code>, <code>MOEX</code>, <code>TWStock</code>, or <code>TWFutures</code> identifiers. The runtime keeps broker and listing metadata separately for execution. Only exchange-routed <code>Crypto</code> identities carry an <code>@venue:market_type</code> suffix.
 
 Production strategies should use the full market prefix. Crypto defaults to spot when no market type is present. Only swap instruments can permit contract leverage. Parsing a market name does not by itself guarantee data coverage or live-trading support; see the live venue matrix in Section 18.
 
@@ -892,11 +900,12 @@ Core backtest request:
   "leverage": 1,
   "params": {},
   "fundingMode": "not_modeled",
+  "session": "all",
   "persist": true
 }
 ~~~
 
-<code>fundingMode</code> is optional and defaults to <code>not_modeled</code>; see [Perpetual funding](#perpetual-funding).
+<code>fundingMode</code> is optional and defaults to <code>not_modeled</code>; see [Perpetual funding](#perpetual-funding). <code>session</code> is optional, defaults to <code>all</code>, and only affects <code>TWFutures</code> instruments (<code>regular</code> = day session only). The Agent Gateway accepts the same field, and MCP <code>submit_backtest</code> takes it as <code>session</code>.
 
 You may supply <code>sourceId</code> or <code>strategyId</code> to load saved source. The request cannot override source markets, instruments, or frequency.
 

@@ -20,6 +20,9 @@ _MARKETS = {
     "futures": "Futures",
     "moex": "MOEX",
     "twstock": "TWStock",
+    "twfutures": "TWFutures",
+    "taifex": "TWFutures",
+    "twf": "TWFutures",
 }
 _TW_SUFFIX_ALIASES = {".TWSE": ".TW", ".TPEX": ".TWO"}
 _TW_INDEX_RE = re.compile(r"IX\d{4}")

@@ -31,6 +31,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+# near_month_contracts is the near-month rule shared with the TWFutures data source.
+from app.data_sources.tw_futures_contracts import near_month_contracts
 from app.data_sources.tw_stock import FubonSidecarError, normalize_tw_symbol
 from app.services.tw_kline_store import (
     MARKET_FUTURES,
@@ -71,6 +73,9 @@ _STOCK_WINDOW = (dtime(8, 30), dtime(14, 0))
 _FUTURES_REGULAR_WINDOW = (dtime(8, 30), dtime(14, 0))
 _FUTURES_AFTERHOURS_START = dtime(14, 50)
 _FUTURES_AFTERHOURS_END = dtime(5, 10)  # next calendar day
+# Official session opens: the reference instants for the near-month choice.
+_DAY_OPEN = dtime(8, 45)
+_NIGHT_OPEN = dtime(15, 0)
 
 _FUTURES_PRODUCT_RE = re.compile(r"^[A-Z]{3}$")
 # Month code A-L (Jan-Dec) and the last digit of the year, e.g. TXFH6.
@@ -139,52 +144,6 @@ def configured_symbol_entries(raw: Optional[str] = None) -> List[Tuple[str, str]
     return entries
 
 
-# --------------------------------------------------------------------------- contracts
-def _contract_date(row: Dict[str, Any]) -> Optional[date]:
-    for key in ("settlementDate", "endDate"):
-        value = row.get(key)
-        if not value:
-            continue
-        try:
-            return date.fromisoformat(str(value)[:10])
-        except ValueError:
-            continue
-    return None
-
-
-def near_month_contracts(
-    tickers: Sequence[Dict[str, Any]],
-    product: str,
-    as_of: date,
-    *,
-    count: int = 2,
-) -> List[str]:
-    """Return the ``count`` nearest contracts of ``product`` still trading on ``as_of``.
-
-    A contract trades through its settlement date's day session, so contracts with
-    ``settlementDate >= as_of`` qualify; ordered by settlement date this yields the
-    near month followed by the next month. Spreads and other products are ignored.
-    """
-    product = str(product or "").strip().upper()
-    candidates: List[Tuple[date, str]] = []
-    for row in tickers:
-        symbol = str(row.get("symbol") or "").strip().upper()
-        if not symbol.startswith(product) or not _FUTURES_CONTRACT_RE.match(symbol):
-            continue
-        settles = _contract_date(row)
-        if settles is None or settles < as_of:
-            continue
-        candidates.append((settles, symbol))
-    candidates.sort()
-    out: List[str] = []
-    for _, symbol in candidates:
-        if symbol not in out:
-            out.append(symbol)
-        if len(out) >= count:
-            break
-    return out
-
-
 # --------------------------------------------------------------------------- schedule
 @dataclass(frozen=True)
 class SessionWindow:
@@ -200,11 +159,16 @@ class SessionWindow:
         """[start, end) unix seconds of the bars that belong to this session."""
         return session_bar_range(self.market, self.session, self.trade_date)
 
-    def contracts_as_of(self) -> date:
-        """Reference day for the near-month choice (the night session trades the next day's contracts)."""
+    def contracts_as_of(self) -> datetime:
+        """Session open: the reference instant for the near-month choice.
+
+        The night session opens after the 13:30 expiry, so on a settlement day it
+        already trades the next month while that day session still trades the
+        expiring one.
+        """
         if self.session == SESSION_AFTERHOURS:
-            return self.trade_date + timedelta(days=1)
-        return self.trade_date
+            return _taipei(self.trade_date, _NIGHT_OPEN)
+        return _taipei(self.trade_date, _DAY_OPEN)
 
 
 def _taipei(day: date, clock: dtime) -> datetime:
