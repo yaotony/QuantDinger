@@ -528,6 +528,7 @@ def _load_tw_sidecar_catalog(market: str = "TWStock") -> list:
             "name": row.name,
             "exchange_id": row.exchange,
             "asset_class": row.asset_class,
+            "aliases": list(row.aliases),
         }
         for row in rows
     ]
@@ -546,8 +547,9 @@ def _search_tw_sidecar(keyword: str, limit: int, market: str = "TWStock") -> lis
     kw = keyword.strip().upper()
     out = []
     for item in catalog:
-        if kw in item["symbol"].upper() or kw in item["name"].upper():
-            out.append(dict(item))
+        terms = (item["symbol"], item["name"], *(item.get("aliases") or ()))
+        if any(kw in term.upper() for term in terms):
+            out.append({k: v for k, v in item.items() if k != "aliases"})
             if len(out) >= limit:
                 break
     return out

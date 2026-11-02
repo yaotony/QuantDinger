@@ -20,7 +20,9 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 _thread_lock = threading.Lock()
 _worker = None
-MARKET_CATALOG_SCHEMA_VERSION = 3
+# Bump when the catalog gains content so existing deployments re-sync on boot
+# (4: TWFutures products, contract months and search aliases).
+MARKET_CATALOG_SCHEMA_VERSION = 4
 
 
 def _json_value(value):
