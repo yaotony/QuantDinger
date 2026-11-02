@@ -21,8 +21,9 @@ logger = get_logger(__name__)
 _thread_lock = threading.Lock()
 _worker = None
 # Bump when the catalog gains content so existing deployments re-sync on boot
-# (4: TWFutures products, contract months and search aliases).
-MARKET_CATALOG_SCHEMA_VERSION = 4
+# (4: TWFutures products, contract months and search aliases;
+#  5: TWStock listed boards only, delisted codes deactivated).
+MARKET_CATALOG_SCHEMA_VERSION = 5
 
 
 def _json_value(value):
@@ -83,14 +84,22 @@ def _finish_run(run_id: int, status: str, result: dict) -> None:
 
 
 def _sync_fubon_catalog(market: str, fetcher) -> dict:
-    """Sync one optional Taiwan catalog; an unavailable sidecar is skipped, not fatal."""
+    """Sync one optional Taiwan catalog; an unavailable sidecar is skipped, not fatal.
+
+    A failing sidecar raises before any write, so nothing is deactivated then.
+    """
     from app.config.data_sources import FubonSidecarConfig
 
     if not FubonSidecarConfig.TOKEN:
         return {"ok": False, "skipped": True, "rows": 0, "reason": "sidecar_not_configured"}
     try:
         rows = fetcher()
-        written = upsert_symbol_master(rows) if rows else 0
+        if not rows:
+            written = 0
+        elif market == "TWStock":
+            written = upsert_symbol_master(rows, deactivate_missing_tw_stock=True)
+        else:
+            written = upsert_symbol_master(rows)
         return {"ok": True, "rows": len(rows), "upserted": written}
     except Exception as exc:
         logger.warning("%s catalog sync skipped, Fubon sidecar unavailable: %s", market, exc)

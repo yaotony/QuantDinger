@@ -149,6 +149,20 @@ def test_stock_tickers(client, fake_sdk):
     assert response.json()["tickers"] == [{"symbol": "IX0001", "name": "發行量加權股價指數"}]
 
 
+def test_stock_tickers_forward_market_board(client, fake_sdk):
+    fake_sdk.responses["stock.intraday.tickers"] = {"data": [{"symbol": "2330", "name": "台積電"}]}
+
+    response = client.get(
+        "/v1/stock/tickers", params={"type": "EQUITY", "exchange": "TWSE", "market": "TSE"}, headers=AUTH
+    )
+
+    assert response.status_code == 200
+    assert fake_sdk.calls == [
+        ("stock.intraday.tickers", {"type": "EQUITY", "exchange": "TWSE", "market": "TSE"})
+    ]
+    assert response.json()["market"] == "TSE"
+
+
 @pytest.mark.parametrize(
     ("session", "expected_params"),
     [

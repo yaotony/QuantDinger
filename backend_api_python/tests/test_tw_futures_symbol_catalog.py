@@ -323,7 +323,7 @@ def test_twfutures_failure_leaves_twstock_and_crypto_untouched(monkeypatch):
     monkeypatch.setattr(
         market_catalog_sync,
         "upsert_symbol_master",
-        lambda rows: written.extend(rows) or len(rows),
+        lambda rows, **_kwargs: written.extend(rows) or len(rows),
     )
     monkeypatch.setattr(
         market_catalog_sync,
@@ -366,7 +366,7 @@ def test_sync_symbol_master_isolates_a_twfutures_failure(monkeypatch):
     stock_row = SymbolMasterRow("TWStock", "2330.TW", "台積電", "TWSE", "TWD", asset_class="equity")
     monkeypatch.setitem(symbol_master_sync.FETCHERS, "TWFutures", unavailable)
     monkeypatch.setitem(symbol_master_sync.FETCHERS, "TWStock", lambda: [stock_row])
-    monkeypatch.setattr(symbol_master_sync, "upsert_symbol_master", lambda rows: len(rows))
+    monkeypatch.setattr(symbol_master_sync, "upsert_symbol_master", lambda rows, **_kwargs: len(rows))
 
     stats = sync_symbol_master(["TWFutures", "TWStock"])
 

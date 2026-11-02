@@ -130,9 +130,14 @@ def test_catalog_schema_version_is_recorded_for_upgrade_detection(monkeypatch):
             "active_crypto": 10,
             "latest_success_result": {"catalog_schema_version": 3},
         }, False),
+        # Version 4 still holds emerging-board and delisted TWStock codes.
         ({
             "active_crypto": 10,
             "latest_success_result": {"catalog_schema_version": 4},
+        }, False),
+        ({
+            "active_crypto": 10,
+            "latest_success_result": {"catalog_schema_version": 5},
         }, True),
     ],
 )

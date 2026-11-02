@@ -178,10 +178,23 @@ otherwise the response is `401 {"code": "unauthorized"}`. All timestamps are uni
 | `GET /v1/stock/candles?symbol&timeframe&from&to` | `stock.historical.candles` | `D`/`W`/`M` accept a `from`/`to` range of at most one year (`YYYY-MM-DD` or unix seconds); `1`/`5`/`10`/`15`/`30`/`60` return only the latest 5 trading days and reject `from`/`to` |
 | `GET /v1/stock/intraday/candles?symbol&timeframe` | `stock.intraday.candles` | Today's minute bars, indices included (e.g. `IX0001`) |
 | `GET /v1/stock/quote?symbol` | `stock.intraday.quote` | Last price, change, OHLC, previous close, name |
-| `GET /v1/stock/tickers?type&exchange` | `stock.intraday.tickers` | `type` `EQUITY`/`INDEX`/`WARRANT`/`ODDLOT`; `exchange` `TWSE`/`TPEx` |
+| `GET /v1/stock/tickers?type&exchange&market` | `stock.intraday.tickers` | `type` `EQUITY`/`INDEX`/`WARRANT`/`ODDLOT`; `exchange` `TWSE`/`TPEx`; optional board `market` `TSE`/`OTC`/`ESB`/`TIB`/`PSB`; rows are `{symbol, name}` |
 | `GET /v1/futopt/intraday/candles?symbol&timeframe&session` | `futopt.intraday.candles` | `session` `regular` (day, default) or `afterhours` (night) |
 | `GET /v1/futopt/quote?symbol&session` | `futopt.intraday.quote` | Last price, `previousClose`, … |
 | `GET /v1/futopt/tickers?type` | `futopt.intraday.tickers` | `type` `FUTURE`/`OPTION`; includes `symbol`, `name`, `endDate`, `settlementDate` |
+
+Stock ticker list (`/v1/stock/tickers`): Fubon documents the filters `type`, `exchange`,
+`market`, `industry`, `isNormal`, `isAttention`, `isDisposition` and `isHalted`; each row carries
+only `symbol` and `name`, so the board is chosen with the `market` filter. The sidecar forwards
+`market` and echoes it in the response (`{type, exchange, market, tickers}`). The board codes are
+`TSE` listed, `OTC` over-the-counter, `TIB` Taiwan Innovation Board, and the emerging boards
+`ESB` (興櫃一般板) and `PSB` (興櫃戰略新板). There is no filter or field for full-delivery
+(全額交割) stocks; `isNormal` only separates attention, disposition and halted stocks.
+
+The backend TWStock catalog requests `EQUITY` for `TWSE`+`TSE`, `TWSE`+`TIB` and `TPEx`+`OTC`
+only, so emerging-board codes stay out of the catalog. A complete listing (stocks from both
+exchanges, at least 70% of the currently active rows) marks absent TWStock codes inactive;
+a failing or truncated sidecar response deactivates nothing.
 
 Candle responses are `{symbol, timeframe, session?, candles: [{time, open, high, low, close, volume}]}`
 sorted by time ascending. Fubon returns the bar time in a `date` field (an ISO string such as

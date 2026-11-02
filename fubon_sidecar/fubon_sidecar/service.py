@@ -38,6 +38,9 @@ HISTORICAL_TIMEFRAMES = INTRADAY_TIMEFRAMES + HISTORICAL_PERIOD_TIMEFRAMES
 SESSIONS = ("regular", "afterhours")
 STOCK_TICKER_TYPES = ("EQUITY", "INDEX", "WARRANT", "ODDLOT")
 STOCK_EXCHANGES = ("TWSE", "TPEx")
+# Board filter of ``intraday.tickers``: TSE listed, OTC over-the-counter, ESB
+# emerging (興櫃一般板), TIB Taiwan Innovation Board, PSB emerging strategic board.
+STOCK_MARKETS = ("TSE", "OTC", "ESB", "TIB", "PSB")
 FUTOPT_TICKER_TYPES = ("FUTURE", "OPTION")
 MAX_HISTORICAL_RANGE_DAYS = 366
 LOGIN_RETRY_DELAYS_SEC = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0)
@@ -403,18 +406,27 @@ class FubonMarketData:
             raise NotFoundError("Fubon returned no quote")
         return normalize.normalize_quote(payload, symbol)
 
-    def stock_tickers(self, ticker_type: str, exchange: str | None = None) -> dict[str, Any]:
+    def stock_tickers(
+        self, ticker_type: str, exchange: str | None = None, market: str | None = None
+    ) -> dict[str, Any]:
         ticker_type = _require_choice(ticker_type, "type", STOCK_TICKER_TYPES)
         params: dict[str, Any] = {"type": ticker_type}
         if exchange:
             params["exchange"] = _require_choice(exchange, "exchange", STOCK_EXCHANGES)
+        if market:
+            params["market"] = _require_choice(market, "market", STOCK_MARKETS)
         payload = self._request("stock", ("intraday", "tickers"), params)
         tickers = normalize.normalize_tickers(
             normalize.data_rows(payload), normalize.STOCK_TICKER_FIELDS
         )
         if not tickers:
             raise NotFoundError("Fubon returned no tickers")
-        return {"type": ticker_type, "exchange": params.get("exchange"), "tickers": tickers}
+        return {
+            "type": ticker_type,
+            "exchange": params.get("exchange"),
+            "market": params.get("market"),
+            "tickers": tickers,
+        }
 
     @staticmethod
     def _session_params(session: str | None) -> tuple[str, dict[str, Any]]:
