@@ -147,10 +147,15 @@ python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
 - **Idempotent:** every write is an upsert, and a bar that already has `source=fubon` is never
   replaced, so imports can be re-run at any time.
 - **Daily gap fill:** `quantdinger.tasks.taifex_tick_backfill` (maintenance queue, every
-  `TAIFEX_TICK_BACKFILL_INTERVAL_SEC`, default 3600 s) downloads the tick files of the last 5
+  `TAIFEX_TICK_BACKFILL_INTERVAL_SEC`, default 3600 s) imports the trades of the last 5
   trading days before today for `TAIFEX_TICK_BACKFILL_PRODUCTS` (default `TX,MTX`) and adds the
-  minutes the Fubon accumulation missed. Each day is recorded in `qd_tw_kline_collect_status` as
-  symbol `TAIFEX_TICKS`; failed days (file not published yet) are retried by the next run.
+  minutes the Fubon accumulation missed. The trading day currently served by the TAIFEX OpenAPI
+  (`TimeAndSalesData`, probed first) is streamed from the OpenAPI; other days use the website's
+  `Daily_YYYY_MM_DD.zip` (kept about 30 days). Days older than 30 days that are still missing are
+  recorded as `missed` with a warning; import a kept tick file with `--ticks` for those. Each day
+  is recorded in `qd_tw_kline_collect_status` as symbol `TAIFEX_TICKS`, its status text starting
+  with `source=openapi` or `source=web_zip`; failed days (not published yet) are retried by the
+  next run.
   `TAIFEX_TICK_BACKFILL_ENABLED=false` turns it off; it also skips itself while
   `FUBON_SIDECAR_TOKEN` is empty.
 

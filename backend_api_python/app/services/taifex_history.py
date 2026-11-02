@@ -503,8 +503,12 @@ class TaifexHistoryImporter:
     # -------------------------------------------------------------- ticks
     def import_tick_bytes(self, payload: bytes, *, products: Optional[Iterable[str]] = None,
                           report: Optional[ImportReport] = None) -> ImportReport:
-        report = report or ImportReport()
         ticks = parse_tick_file(decode_taifex_bytes(payload), products=products)
+        return self.import_ticks(ticks, report=report)
+
+    def import_ticks(self, ticks: Iterable[Tick], *, report: Optional[ImportReport] = None) -> ImportReport:
+        """Aggregate already parsed ticks (any source) into 1m bars and store them."""
+        report = report or ImportReport()
         self._write_minutes(ticks_to_minute_bars(ticks), report)
         return report
 

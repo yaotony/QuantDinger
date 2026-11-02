@@ -18,6 +18,8 @@ Result contract
   trailing garbage) -> :class:`TaifexOpenApiFormatError`.
 * Empty array ``[]`` -> no exception; after iteration ``result.empty`` is true
   and ``result.data_date`` is ``None``.
+* :meth:`TaifexOpenApiClient.probe` streams only the first row and closes the
+  connection, so a caller learns which day is served before a full download.
 
 The data date is taken from the rows' ``Date`` field (``YYYYMMDD``), never from
 the request time. ``Last-Modified`` is returned as published by the server.
@@ -295,6 +297,37 @@ class OpenApiResult:
     def empty(self) -> bool:
         return self.complete and self.row_count == 0
 
+    def close(self) -> None:
+        """Release the underlying stream (drops the connection of an unfinished download)."""
+        close = getattr(self._chunks, "close", None)
+        if callable(close):
+            close()
+
+
+@dataclass
+class ProbeResult:
+    """First row of an endpoint, read without downloading the rest of the body.
+
+    ``first_date`` is the raw ``Date`` of that row. For ``TimeAndSalesData`` the
+    first row may be the night session opened on the previous trading day, so
+    callers convert ``first_row`` to its trading day themselves.
+    """
+
+    endpoint: str
+    first_row: Optional[Dict[str, Any]]
+    first_date: Optional[date]
+    last_modified: Optional[datetime]
+    size: Optional[int]
+
+    @property
+    def empty(self) -> bool:
+        return self.first_row is None
+
+
+def _content_size(headers: Mapping[str, str]) -> Optional[int]:
+    text = (_header(headers, "Content-Length") or "").strip()
+    return int(text) if text.isdigit() else None
+
 
 class TaifexOpenApiClient:
     def __init__(self, base_url: Optional[str] = None, fetcher: Optional[Fetcher] = None):
@@ -316,6 +349,27 @@ class TaifexOpenApiClient:
         """Start a streamed ``GET``; iterate the result for the rows."""
         url = self.url_for(endpoint)
         return OpenApiResult(endpoint, url, self._fetch()("GET", url))
+
+    def probe(self, endpoint: str) -> ProbeResult:
+        """Read only the first row of ``endpoint`` and close the connection.
+
+        Tells which day an endpoint currently serves before committing to a
+        full download (``TimeAndSalesData`` is about 227 MB).
+        """
+        result = self.fetch(endpoint)
+        rows = iter(result)
+        try:
+            first = next(rows, None)
+        finally:
+            rows.close()
+            result.close()
+        return ProbeResult(
+            endpoint=result.endpoint,
+            first_row=first,
+            first_date=parse_row_date(first.get("Date")) if first is not None else None,
+            last_modified=result.last_modified,
+            size=_content_size(result.headers),
+        )
 
     def last_modified(self, endpoint: str) -> Optional[datetime]:
         """``HEAD`` the endpoint and return its ``Last-Modified`` (no body download)."""

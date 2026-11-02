@@ -130,9 +130,13 @@ python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
   判斷（日盤 08:30-14:00、夜盤 14:50-05:10）。檔案可以是 Big5 或 UTF-8。
 - **可重跑：** 所有寫入都是 upsert，已有 `source=fubon` 的 K 棒不會被覆蓋。
 - **每日補缺口：** `quantdinger.tasks.taifex_tick_backfill`（maintenance queue，每
-  `TAIFEX_TICK_BACKFILL_INTERVAL_SEC` 秒，預設 3600 秒）下載今天以前最近 5 個交易日的逐筆檔
-  （商品依 `TAIFEX_TICK_BACKFILL_PRODUCTS`，預設 `TX,MTX`），補上富邦累積漏掉的分鐘。每天的結果以
-  symbol `TAIFEX_TICKS` 記在 `qd_tw_kline_collect_status`；失敗（例如檔案還沒公布）下一次排程重抓。
+  `TAIFEX_TICK_BACKFILL_INTERVAL_SEC` 秒，預設 3600 秒）匯入今天以前最近 5 個交易日的逐筆成交
+  （商品依 `TAIFEX_TICK_BACKFILL_PRODUCTS`，預設 `TX,MTX`），補上富邦累積漏掉的分鐘。期交所 OpenAPI
+  （`TimeAndSalesData`，先探測）目前提供的那個交易日走 OpenAPI 串流；其他日子改用網頁
+  `Daily_YYYY_MM_DD.zip`（約保留 30 天）。超過 30 天仍未補到的日子記為 `missed` 並記 warning，
+  可用 `--ticks` 匯入自行保存的逐筆檔。每天的結果以 symbol `TAIFEX_TICKS` 記在
+  `qd_tw_kline_collect_status`，狀態文字開頭為 `source=openapi` 或 `source=web_zip`；失敗（例如
+  還沒公布）下一次排程重抓。
   `TAIFEX_TICK_BACKFILL_ENABLED=false` 可關閉；`FUBON_SIDECAR_TOKEN` 為空時自動略過。
 
 **匯入後可回測的範圍：**
