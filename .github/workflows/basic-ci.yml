@@ -160,6 +160,7 @@ jobs:
             tests/integration/test_execution_projection_atomic.py \
             tests/integration/test_grid_fill_accounting.py \
             tests/integration/test_tw_stock_symbols_postgres.py \
+            tests/integration/test_tw_futures_symbols_postgres.py \
             --cov=. \
             --cov-append \
             --cov-branch \

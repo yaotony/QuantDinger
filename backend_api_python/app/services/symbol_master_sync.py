@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 import urllib3
@@ -44,6 +44,8 @@ class SymbolMasterRow:
     underlying_market: str = ""
     underlying_symbol: str = ""
     product_meta: Optional[Dict[str, object]] = None
+    # Extra search terms written to ``qd_market_symbol_aliases``.
+    aliases: Tuple[str, ...] = ()
 
 
 STATIC_MARKET_ROWS = [
@@ -919,9 +921,22 @@ def fetch_tw_stock_symbols(source=None) -> List[SymbolMasterRow]:
 
 
 # TWFutures catalog: every monthly contract of the sidecar FUTURE list (TXFH6)
-# plus one row per product (TXF, the continuous near month). Spreads (TXFK6/L6)
-# and anything not shaped like a monthly contract are dropped.
+# plus one row per product (TXF, the continuous near month). Spreads (TXFK6/L6),
+# anything not shaped like a monthly contract and contracts already past their
+# last trading day are dropped. Product rows come first so the continuous code
+# leads search results.
 _TW_FUTURES_NAME_SUFFIX_RE = re.compile(r"[\s\d/年月]+$")
+# Colloquial search terms for the index futures products. The sidecar names use
+# the formal 臺 form (臺股期貨, 小型臺指); traders usually type 台指 / 小台.
+TW_FUTURES_PRODUCT_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "TXF": ("台指期", "台指", "大台", "臺指期", "大臺"),
+    "MXF": ("小台指", "小台", "小臺指", "小臺"),
+    "TMF": ("微台指", "微台", "微臺指", "微臺"),
+    "EXF": ("電子期", "電子指數期貨"),
+    "FXF": ("金融期", "金融指數期貨"),
+    "ZEF": ("小電子期",),
+    "ZFF": ("小金融期",),
+}
 
 
 def _tw_futures_product_name(product: str, contract_name: str) -> str:
@@ -934,16 +949,45 @@ def _tw_futures_product_name(product: str, contract_name: str) -> str:
     return spec.name if spec else (trimmed or product)
 
 
-def fetch_tw_futures_symbols(source=None) -> List[SymbolMasterRow]:
-    """Fetch TAIFEX futures products and contract months from the Fubon sidecar.
+def _tw_futures_aliases(name: str, extra: Sequence[str] = ()) -> Tuple[str, ...]:
+    """Search aliases: curated terms plus the 台 spelling of a 臺 name."""
+    out: List[str] = []
+    for alias in (*extra, name.replace("臺", "台")):
+        alias = alias.strip()
+        if alias and alias != name and alias not in out:
+            out.append(alias)
+    return tuple(out)
+
+
+def _tw_futures_contract_expired(raw: Dict[str, object], as_of: "date | datetime") -> bool:
+    from app.data_sources.tw_futures_contracts import is_expired
+
+    for key in ("endDate", "settlementDate"):
+        value = raw.get(key)
+        if not value:
+            continue
+        try:
+            return is_expired(date.fromisoformat(str(value)[:10]), as_of)
+        except ValueError:
+            continue
+    # Without a last trading day the listing itself is the only signal.
+    return False
+
+
+def fetch_tw_futures_symbols(source=None, as_of: "date | datetime | None" = None) -> List[SymbolMasterRow]:
+    """Fetch TAIFEX futures products and live contract months from the Fubon sidecar.
+
+    ``as_of`` (default: now in Asia/Taipei) decides which listed contracts have
+    already expired; those are left out so the upsert marks them inactive.
 
     Raises ``FubonSidecarError`` when the sidecar is not configured or not
     reachable so callers can log a warning and skip the TWFutures catalog.
     """
-    from app.data_sources.tw_futures_contracts import CONTRACT_RE, contract_spec
+    from app.data_sources.tw_futures_contracts import CONTRACT_RE, TAIPEI_TZ, contract_spec
     from app.data_sources.tw_stock import TWStockDataSource
 
     source = source or TWStockDataSource()
+    as_of = as_of or datetime.now(TAIPEI_TZ)
     products: Dict[str, SymbolMasterRow] = {}
     contracts: List[SymbolMasterRow] = []
     for raw in source.get_futopt_tickers("FUTURE"):
@@ -960,19 +1004,24 @@ def fetch_tw_futures_symbols(source=None) -> List[SymbolMasterRow]:
                 meta[key] = str(raw.get(key))[:10]
         if spec is not None:
             meta.update({"multiplier": spec.multiplier, "tickSize": spec.tick_size})
+        if product not in products:
+            product_meta = {k: v for k, v in meta.items() if k not in ("settlementDate", "endDate")}
+            product_meta["continuous"] = True
+            product_name = _tw_futures_product_name(product, name)
+            products[product] = SymbolMasterRow(
+                "TWFutures", product, product_name, "TAIFEX", "TWD",
+                asset_class="futures", product_type="futures", api_family="futures",
+                product_meta=product_meta,
+                aliases=_tw_futures_aliases(product_name, TW_FUTURES_PRODUCT_ALIASES.get(product, ())),
+            )
+        if _tw_futures_contract_expired(raw, as_of):
+            continue
         contracts.append(SymbolMasterRow(
             "TWFutures", code, name, "TAIFEX", "TWD",
             asset_class="futures", product_type="futures", api_family="futures",
             product_meta=meta,
+            aliases=_tw_futures_aliases(name),
         ))
-        if product not in products:
-            product_meta = {k: v for k, v in meta.items() if k not in ("settlementDate", "endDate")}
-            product_meta["continuous"] = True
-            products[product] = SymbolMasterRow(
-                "TWFutures", product, _tw_futures_product_name(product, name), "TAIFEX", "TWD",
-                asset_class="futures", product_type="futures", api_family="futures",
-                product_meta=product_meta,
-            )
     options: List[SymbolMasterRow] = []
     try:
         options = fetch_tw_option_symbols(source)
@@ -1104,6 +1153,15 @@ def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
                     json.dumps(row.product_meta or {}, ensure_ascii=False),
                 ),
             )
+            for alias in row.aliases:
+                cur.execute(
+                    """
+                    INSERT INTO qd_market_symbol_aliases (market, symbol, alias, is_active, sort_order)
+                    VALUES (?, ?, ?, 1, 0)
+                    ON CONFLICT (market, symbol, alias) DO UPDATE SET is_active = 1
+                    """,
+                    (row.market, row.symbol, alias),
+                )
             count += 1
         db.commit()
         cur.close()

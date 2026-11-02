@@ -125,9 +125,14 @@ def test_catalog_schema_version_is_recorded_for_upgrade_detection(monkeypatch):
             "active_crypto": 0,
             "latest_success_result": {"catalog_schema_version": 2},
         }, False),
+        # Version 3 predates the TWFutures catalog, so it must re-sync once.
         ({
             "active_crypto": 10,
             "latest_success_result": {"catalog_schema_version": 3},
+        }, False),
+        ({
+            "active_crypto": 10,
+            "latest_success_result": {"catalog_schema_version": 4},
         }, True),
     ],
 )

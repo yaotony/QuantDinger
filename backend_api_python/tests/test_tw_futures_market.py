@@ -247,7 +247,7 @@ class _FuturesTickers:
 
 
 def test_symbol_catalog_lists_products_and_contract_months():
-    rows = fetch_tw_futures_symbols(_FuturesTickers())
+    rows = fetch_tw_futures_symbols(_FuturesTickers(), as_of=datetime(2026, 11, 2, 9, 0))
     by_symbol = {row.symbol: row for row in rows}
     assert set(by_symbol) == {"TXF", "MXF", "TXFK6", "TXFL6", "MXFK6"}
     assert all(row.market == "TWFutures" and row.currency == "TWD" for row in rows)
