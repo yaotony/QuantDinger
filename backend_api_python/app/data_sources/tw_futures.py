@@ -6,6 +6,8 @@ Read-only: research, backtesting and paper trading. Nothing here places orders.
 Symbol format (QuantDinger identity):
     TXF / MXF / TMF / EXF / FXF   continuous near month, stitched by date
     TXFH6                         one contract month (H = August, 6 = 2026)
+    TXO23000H6                    one option contract (``app.data_sources.tw_options``);
+                                  quotes and K-lines only, never backtested
     TXF@regular                   internal data symbol: day session only (see below)
 
 Sessions (Asia/Taipei):
@@ -53,6 +55,7 @@ from app.data_sources.tw_futures_contracts import (
     next_trading_day,
     xtai_is_trading_day,
 )
+from app.data_sources.tw_options import OPTION_RE
 from app.data_sources.tw_stock import (
     INTRADAY_TIMEFRAMES,
     FubonSidecarError,
@@ -108,6 +111,10 @@ class TWFuturesSymbol:
     def continuous(self) -> bool:
         return not self.contract
 
+    @property
+    def is_option(self) -> bool:
+        return bool(OPTION_RE.match(self.contract))
+
 
 def parse_tw_futures_symbol(symbol: str) -> Optional[TWFuturesSymbol]:
     """``TXF`` / ``TWFutures:TXFH6`` / ``TXF@regular`` -> parsed symbol, or None when invalid."""
@@ -125,7 +132,7 @@ def parse_tw_futures_symbol(symbol: str) -> Optional[TWFuturesSymbol]:
             return None
     if PRODUCT_RE.match(s):
         return TWFuturesSymbol(s, "", session)
-    match = CONTRACT_RE.match(s)
+    match = CONTRACT_RE.match(s) or OPTION_RE.match(s)
     if match:
         return TWFuturesSymbol(match.group(1), s, session)
     return None

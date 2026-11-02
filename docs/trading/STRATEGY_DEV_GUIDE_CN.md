@@ -164,6 +164,7 @@ Content-Type: application/json
 | 台湾指数 | <code>TWStock:IX0001</code>（加权指数）、<code>TWStock:IX0043</code>（柜买指数） |
 | 台湾期货（期交所），连续近月 | <code>TWFutures:TXF</code>、<code>TWFutures:MXF</code>、<code>TWFutures:TMF</code>、<code>TWFutures:EXF</code>、<code>TWFutures:FXF</code> |
 | 台湾期货，指定月份合约 | <code>TWFutures:TXFH6</code>（商品代码 + 月份字母 <code>A</code>-<code>L</code> 代表 1-12 月 + 年份个位数：2026 年 8 月） |
+| 台湾选择权（期交所），只提供行情 | <code>TWFutures:TXO23000H6</code>（2026 年 8 月、履约价 23000 的买权）、<code>TWFutures:TXO23000T6</code>（2026 年 8 月卖权）、周选 <code>TWFutures:TX123000H6</code> |
 
 系统也会规范化部分别名，例如 <code>600519.XSHG</code> → <code>CNStock:600519.SH</code>、<code>BTCUSDT</code> → <code>BTC/USDT</code>。没有市场前缀时，以 <code>.TW</code>／<code>.TWO</code> 结尾的代码与 <code>IX</code> 指数代码会被推断为 <code>TWStock</code>。
 
@@ -174,6 +175,7 @@ Content-Type: application/json
 - **交易时段**：日盘 08:45-13:45、夜盘 15:00-次日 05:00（台北时间）。交易日采用 XTAI 日历，夜盘归属**下一个**交易日（期交所定义），因此日 K 从前一晚 15:00 开盘到 13:45 收盘，时间标在该交易日的台北午夜。回测选项 <code>session</code> 为 <code>all</code>（默认，日盘 + 夜盘）或 <code>regular</code>（仅日盘）。
 - **近月与换月**：合约最后交易日为该月第三个星期三（遇假日顺延到下一个交易日），当天 13:30 后即不再是近月，当晚夜盘已交易下个月合约。连续代码的每一根 K 线都取当时的近月合约；不做价差调整，换月时价格会跳动一个月份价差，结果中以 <code>executionAssumptions.twFutures.rollMethod == "front_month_unadjusted"</code> 标示。要研究单一合约、不换月时，请用指定月份代码。
 - **契约乘数**：数量以指数单位计，一口等于乘数：<code>order("TWFutures:TXF", 200)</code> 为买进一口台指期。下单数量向下取整到整口。损益与按比例计算的手续费都依乘数计算（TXF 200、MXF 50、TMF 10、EXF 4,000、FXF 1,000 元／点；最小跳动 1、1、1、0.05、0.2）。不模拟保证金：持仓以全部名目价值占用现金，请据此设定初始资金或杠杆。<code>executionAssumptions.twFutures</code> 列出盘别、换月方式与各标的的乘数和跳动点。
+- **选择权只提供行情**：期交所选择权（月选 <code>TXO</code>，周选 <code>TX1</code>／<code>TX2</code>／<code>TX4</code>／<code>TX5</code>，分别在该月第一、二、四、五个星期三到期）的代码为商品代码 + 5 位数履约价 + 月份字母 + 年份个位数；买权用 <code>A</code>-<code>L</code>、卖权用 <code>M</code>-<code>X</code> 代表 1-12 月。可用于报价、K 线、代码清单与 Agent 选择权链（<code>GET /api/agent/v1/option-chain</code>，MCP <code>get_option_chain</code>）。回测引擎不模拟权利金、到期、履约与保证金，因此回测或模拟盘／实盘部署中只要出现选择权合约，就会以 <code>strategyV2.optionsBacktestUnsupported</code> 拒绝。每日 1 分 K 累积默认不收选择权，只有列在 <code>TW_KLINE_COLLECT_SYMBOLS</code> 中的合约才会累积。
 
 券商交易的证券统一使用 <code>Market:Symbol</code> 作为策略层规范身份。<code>USStock</code>、<code>HKStock</code>、<code>CNStock</code>、<code>Forex</code>、<code>Futures</code>、<code>MOEX</code>、<code>TWStock</code> 和 <code>TWFutures</code> 标的后面不要添加 <code>@NASDAQ</code>、<code>@NYSE</code>、<code>@HKEX</code> 或 <code>@spot</code>。运行时会把券商、上市地点等执行元数据单独保存。只有通过交易所路由的 <code>Crypto</code> 身份才携带 <code>@venue:market_type</code> 后缀。
 

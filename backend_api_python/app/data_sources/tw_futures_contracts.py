@@ -94,16 +94,21 @@ def parse_contract(symbol: str, reference: date) -> Optional[ContractMonth]:
         return None
     product, letter, digit = match.group(1), match.group(2), int(match.group(3))
     month = MONTH_CODES.index(letter) + 1
+    return ContractMonth(product, resolve_year(digit, month, reference), month)
+
+
+def resolve_year(digit: int, month: int, reference: date) -> int:
+    """The year ending in ``digit`` that puts ``month`` closest to ``reference``."""
     ref_index = reference.year * 12 + reference.month
     best: Optional[Tuple[int, int]] = None
     for year in range(reference.year - 9, reference.year + 10):
-        if year % 10 != digit:
+        if year % 10 != int(digit):
             continue
-        distance = abs(year * 12 + month - ref_index)
+        distance = abs(year * 12 + int(month) - ref_index)
         if best is None or distance < best[0]:
             best = (distance, year)
     assert best is not None
-    return ContractMonth(product, best[1], month)
+    return best[1]
 
 
 def next_month(year: int, month: int) -> Tuple[int, int]:

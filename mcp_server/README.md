@@ -39,6 +39,7 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 | `whoami`, `check_health` | R/public | Identity, allowlists, and liveness |
 | `check_environment` | R | One-call readiness check before starting work: connectivity, backend version, authentication, token scopes, paper-only mode, backtest concurrency quota (limit and active jobs), range limits by market and timeframe, and token expiry. Each entry in `checks` is `pass`/`warn`/`fail` with a `remediation` hint, and `overall` is the worst status. The report never contains the token or other secrets |
 | `list_markets`, `search_symbols`, `get_klines`, `get_price` | R | Market discovery and data |
+| `get_option_chain` | R | TAIFEX option chain (`TXO`, weekly `TX1`/`TX2`/`TX4`/`TX5`): call and put quotes per strike for one expiry month. Market data only; options cannot be backtested or deployed |
 | `get_data_coverage` | R | Earliest available bar (`unknown` when the source cannot report it), backtest range limit including warmup, and range feasibility with suggested dates; same rule as `submit_backtest` |
 | Universe and factor tools | R | Point-in-time research inputs |
 | `list_watchlist`, `add_watchlist`, `remove_watchlist` | R/W | Watchlist workspace |

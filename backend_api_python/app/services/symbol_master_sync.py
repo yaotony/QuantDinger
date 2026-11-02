@@ -13,6 +13,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import requests
@@ -972,7 +973,61 @@ def fetch_tw_futures_symbols(source=None) -> List[SymbolMasterRow]:
                 asset_class="futures", product_type="futures", api_family="futures",
                 product_meta=product_meta,
             )
-    return _unique_rows(list(products.values()) + contracts)
+    options: List[SymbolMasterRow] = []
+    try:
+        options = fetch_tw_option_symbols(source)
+    except Exception as exc:  # keep the futures catalog when the option list fails
+        logger.warning("TWFutures option catalog unavailable, syncing futures only: %s", exc)
+    return _unique_rows(list(products.values()) + contracts + options)
+
+
+def fetch_tw_option_symbols(source=None, *, today: Optional[date] = None) -> List[SymbolMasterRow]:
+    """TAIFEX option contracts (``TXO23000H6``) from the sidecar OPTION ticker list.
+
+    Rows are ``product_type="option"`` with the strike, call/put, expiry month and
+    last trading day in ``product_meta``. Options are market data only: the
+    backtest engine and deployments reject them.
+    """
+    from app.data_sources.tw_futures_contracts import TAIPEI_TZ
+    from app.data_sources.tw_options import option_product, parse_option_symbol
+    from app.data_sources.tw_stock import TWStockDataSource
+
+    source = source or TWStockDataSource()
+    reference = today or datetime.now(TAIPEI_TZ).date()
+    rows: List[SymbolMasterRow] = []
+    for raw in source.get_futopt_tickers("OPTION"):
+        code = _clean_symbol(raw.get("symbol"))
+        contract = parse_option_symbol(code, reference)
+        if contract is None:
+            continue
+        expiry = ""
+        for key in ("endDate", "settlementDate"):
+            if raw.get(key):
+                expiry = str(raw.get(key))[:10]
+                break
+        if not expiry and contract.expiry is not None:
+            expiry = contract.expiry.isoformat()
+        meta: Dict[str, object] = {
+            "product": contract.product,
+            "strike": contract.strike,
+            "right": contract.right,
+            "expiryMonth": contract.expiry_month,
+            "expiryDate": expiry,
+            "backtestSupported": False,
+        }
+        for key in ("settlementDate", "endDate"):
+            if raw.get(key):
+                meta[key] = str(raw.get(key))[:10]
+        spec = option_product(contract.product)
+        if spec is not None:
+            meta.update({"multiplier": spec.multiplier, "underlying": f"TWStock:{spec.underlying}"})
+        name = _clean_text(raw.get("name")) or code
+        rows.append(SymbolMasterRow(
+            "TWFutures", code, name, "TAIFEX", "TWD",
+            asset_class="option", product_type="option", api_family="option",
+            product_meta=meta,
+        ))
+    return _unique_rows(rows)
 
 
 FETCHERS = {
@@ -1001,9 +1056,14 @@ def upsert_symbol_master(rows: Sequence[SymbolMasterRow]) -> int:
                 "UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'Crypto' AND exchange = ? AND market_type = ?",
                 (exchange_id, market_type),
             )
-        if any(row.market == "TWFutures" for row in rows):
-            # Contract months expire; the upsert below re-activates the listed ones.
-            cur.execute("UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'TWFutures'")
+        tw_futures_types = sorted({row.product_type for row in rows if row.market == "TWFutures"})
+        for product_type in tw_futures_types:
+            # Contracts expire; the upsert below re-activates the listed ones. Scoped
+            # per product type so a futures-only sync keeps the option catalog.
+            cur.execute(
+                "UPDATE qd_market_symbols SET is_active = 0 WHERE market = 'TWFutures' AND product_type = ?",
+                (product_type,),
+            )
         for row in rows:
             asset_class = row.asset_class or _default_asset_class(row.market, row.symbol)
             cur.execute(
