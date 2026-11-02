@@ -52,21 +52,31 @@ def weekdays(*holidays: str):
 class FakeStore:
     """In-memory ``qd_tw_klines`` keyed by (contract, session)."""
 
-    def __init__(self, rows: Dict[Tuple[str, str], List[Dict[str, Any]]] | None = None) -> None:
+    def __init__(
+        self,
+        rows: Dict[Tuple[str, str], List[Dict[str, Any]]] | None = None,
+        daily: Dict[Tuple[str, str], List[Dict[str, Any]]] | None = None,
+    ) -> None:
         self.rows = rows or {}
+        self.daily = daily or {}
         self.calls: List[Tuple[str, str, int, int]] = []
         self.earliest_calls: List[Dict[str, Any]] = []
         self.earliest: int | None = None
+        self.earliest_daily: int | None = None
 
     def load_bars(self, *, market, symbol, session, timeframe, start_ts=None, end_ts=None, limit=None):
-        assert market == "TWFutures" and timeframe == "1m"
-        self.calls.append((symbol, session, start_ts, end_ts))
+        assert market == "TWFutures" and timeframe in ("1m", "1D")
+        source = self.rows if timeframe == "1m" else self.daily
+        if timeframe == "1m":
+            self.calls.append((symbol, session, start_ts, end_ts))
         return [
-            dict(bar) for bar in self.rows.get((symbol, session), [])
+            dict(bar) for bar in source.get((symbol, session), [])
             if (start_ts is None or bar["time"] >= start_ts) and (end_ts is None or bar["time"] < end_ts)
         ]
 
     def earliest_bar_time_like(self, *, market, symbol_pattern, sessions, timeframe):
+        if timeframe == "1D":
+            return self.earliest_daily
         self.earliest_calls.append({"pattern": symbol_pattern, "sessions": tuple(sessions)})
         return self.earliest
 
@@ -331,6 +341,99 @@ def test_earliest_bar_covers_every_contract_month_of_a_continuous_code():
 
 def test_earliest_bar_unknown_without_data():
     assert _source(FakeStore()).get_earliest_kline_time("TXF", "1D") is None
+
+
+def _daily_row(day: str, open_: float, close: float, volume: float = 10.0) -> Dict[str, Any]:
+    return {
+        "time": _ts(day, "00:00"), "open": open_, "high": max(open_, close) + 5,
+        "low": min(open_, close) - 5, "close": close, "volume": volume,
+    }
+
+
+def test_earliest_daily_reflects_the_taifex_daily_import():
+    store = FakeStore()
+    store.earliest = _ts("2026-11-20", "15:00")
+    store.earliest_daily = _ts("2020-01-02", "00:00")
+    source = _source(store)
+    assert source.get_earliest_kline_time("TWFutures:TXF", "1D") == _ts("2020-01-02", "00:00")
+    assert source.get_earliest_kline_time("TXF", "1W") == _ts("2020-01-02", "00:00")
+    # Intraday timeframes still start at the first 1m bar.
+    assert source.get_earliest_kline_time("TXF", "1H") == _ts("2026-11-20", "15:00")
+    store.earliest = None
+    assert source.get_earliest_kline_time("TXF", "1D") == _ts("2020-01-02", "00:00")
+    assert source.get_earliest_kline_time("TXF", "5m") is None
+
+
+def test_data_coverage_reports_the_daily_import_start(monkeypatch):
+    from app.data_sources.factory import DataSourceFactory
+    from app.services.data_coverage import describe_data_coverage
+
+    store = FakeStore()
+    store.earliest = _ts("2026-11-20", "15:00")
+    store.earliest_daily = _ts("2020-01-02", "00:00")
+    source = _source(store)
+    monkeypatch.setattr(DataSourceFactory, "_resolve_source", classmethod(lambda cls, *a, **k: source))
+    daily = describe_data_coverage(market="TWFutures", symbol="TXF", timeframe="1D")
+    # Asia/Taipei midnight of 2020-01-02 is 16:00 UTC the day before.
+    assert daily["earliest_bar"] == {"status": "known", "time": "2020-01-01T16:00:00Z", "timestamp": store.earliest_daily}
+    minute = describe_data_coverage(market="TWFutures", symbol="TXF", timeframe="1m")
+    assert minute["earliest_bar"]["timestamp"] == store.earliest
+
+
+def test_daily_bars_fall_back_to_stored_taifex_daily_rows():
+    # November 2020: TXFK0 expires on 2020-11-18 (third Wednesday).
+    store = FakeStore(
+        rows={("TXFL6", "regular"): _bars("2026-11-30", "08:45", 2, 500)},
+        daily={
+            ("TXFK0", "afterhours"): [_daily_row("2020-11-16", 100, 104, 3)],
+            ("TXFK0", "regular"): [_daily_row("2020-11-16", 105, 110, 7), _daily_row("2020-11-18", 120, 121)],
+            # The next month's rows before the roll are not the near month.
+            ("TXFL0", "regular"): [_daily_row("2020-11-18", 900, 901), _daily_row("2020-11-19", 130, 131)],
+        },
+    )
+    source = _source(store, now="2026-12-01T10:00")
+    klines = source.get_kline(
+        "TXF", "1D", 20, after_time=_ts("2020-11-16", "00:00"), before_time=_ts("2020-11-20", "00:00"),
+    )
+    by_day = {datetime.fromtimestamp(k["time"], tz=TAIPEI).date(): k for k in klines}
+    assert sorted(by_day) == [date(2020, 11, 16), date(2020, 11, 18), date(2020, 11, 19)]
+    monday = by_day[date(2020, 11, 16)]
+    # Night (previous evening) open, day close, both volumes.
+    assert (monday["open"], monday["close"], monday["volume"]) == (100, 110, 10)
+    assert by_day[date(2020, 11, 18)]["close"] == 121
+    assert by_day[date(2020, 11, 19)]["close"] == 131
+
+    regular = source.get_kline(
+        "TXF@regular", "1D", 20, after_time=_ts("2020-11-16", "00:00"), before_time=_ts("2020-11-17", "00:00"),
+    )
+    assert [(k["open"], k["close"]) for k in regular] == [(105, 110)]
+
+
+def test_minute_derived_daily_bar_wins_over_stored_daily_row():
+    store = FakeStore(
+        rows={("TXFL6", "regular"): _bars("2026-11-30", "08:45", 2, 500)},
+        daily={("TXFL6", "regular"): [_daily_row("2026-11-30", 1, 2), _daily_row("2026-11-27", 3, 4)]},
+    )
+    source = _source(store, now="2026-12-01T10:00")
+    klines = source.get_kline(
+        "TXF@regular", "1D", 10, after_time=_ts("2026-11-27", "00:00"), before_time=_ts("2026-12-01", "00:00"),
+    )
+    assert [(datetime.fromtimestamp(k["time"], tz=TAIPEI).date(), k["close"]) for k in klines] == [
+        (date(2026, 11, 27), 4), (date(2026, 11, 30), 500),
+    ]
+
+
+def test_daily_bars_survive_a_sidecar_outage_when_stored_daily_rows_exist():
+    down = FubonSidecarError("sidecar is unreachable")
+    store = FakeStore(daily={("TXFL6", "regular"): [_daily_row("2026-11-30", 1, 2)]})
+    source = _source(store, now="2026-12-01T09:00", sidecar={
+        ("TXFL6", "regular"): down, ("TXFL6", "afterhours"): down,
+    })
+    assert [k["close"] for k in source.get_kline("TXF@regular", "1D", 5)] == [2]
+    with pytest.raises(FubonSidecarError):
+        _source(FakeStore(), now="2026-12-01T09:00", sidecar={
+            ("TXFL6", "regular"): down, ("TXFL6", "afterhours"): down,
+        }).get_kline("TXF", "1D", 5)
 
 
 def test_ticker_quotes_the_near_month_contract(monkeypatch):

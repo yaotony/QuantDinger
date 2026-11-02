@@ -116,6 +116,53 @@ missing until the TAIFEX history import. Strategies read `TWStock` minute and ho
 table first and fill the most recent days from the sidecar, and the backtest data-coverage answer
 reports the earliest stored bar.
 
+## 7. TAIFEX futures history import
+
+Fubon serves no futures history, so past `TWFutures` bars come from TAIFEX public data and are
+written to the same `qd_tw_klines` table with `source=taifex`. Run the import from
+`backend_api_python/` with the backend's database settings:
+
+```bash
+# Daily bars (TAIFEX daily report, one request per product and month, 1 s apart)
+python scripts/import_taifex_history.py --daily --from 2020-01-01 --to 2026-10-31 --products TX,MTX,TMF
+# 1m bars from tick files already downloaded from TAIFEX (Daily_YYYY_MM_DD .csv/.zip, file or directory)
+python scripts/import_taifex_history.py --ticks ~/Downloads/taifex/
+# Download and import the tick files of given trading days (TAIFEX keeps the last 30 days)
+python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
+```
+
+- **Product codes:** TAIFEX `TX`, `MTX`, `TMF`, `TE`, `TF`, `ZEF`, `ZFF` are stored as the Fubon codes
+  `TXF`, `MXF`, `TMF`, `EXF`, `FXF`, `ZEF`, `ZFF` (`--products` accepts either form). Bars are
+  stored per contract month (`TXFH6`); weekly contracts (`202605W4`) and spreads are skipped.
+- **Daily report → `timeframe=1D`:** one bar per contract, session and trading day, labelled at
+  Asia/Taipei midnight. A `一般` row is the day session; a `盤後` row of date D is the night session
+  that opened at 15:00 on D and belongs to the next trading day. Months with no data are listed as
+  `empty`, failed months as `failed` (the command exits 1); re-run the same command to retry.
+- **Tick files → `timeframe=1m`:** trades are bucketed by minute; 成交數量(B+S) counts both sides,
+  so volume is quantity / 2 contracts. The session follows the minute (day 08:30-14:00, night
+  14:50-05:10). Files may be Big5 or UTF-8.
+- **Idempotent:** every write is an upsert, and a bar that already has `source=fubon` is never
+  replaced, so imports can be re-run at any time.
+- **Daily gap fill:** `quantdinger.tasks.taifex_tick_backfill` (maintenance queue, every
+  `TAIFEX_TICK_BACKFILL_INTERVAL_SEC`, default 3600 s) downloads the tick files of the last 5
+  trading days before today for `TAIFEX_TICK_BACKFILL_PRODUCTS` (default `TX,MTX`) and adds the
+  minutes the Fubon accumulation missed. Each day is recorded in `qd_tw_kline_collect_status` as
+  symbol `TAIFEX_TICKS`; failed days (file not published yet) are retried by the next run.
+  `TAIFEX_TICK_BACKFILL_ENABLED=false` turns it off; it also skips itself while
+  `FUBON_SIDECAR_TOKEN` is empty.
+
+**Backtest range after an import:**
+
+| Timeframe | Data source | Reaches back to |
+|---|---|---|
+| `1D`, `1W` | 1m bars where stored, otherwise the imported daily bars | The `--daily --from` date (TAIFEX daily reports go back many years) |
+| `1m` … `4H` | Stored 1m bars only (Fubon accumulation + TAIFEX tick files) | About 30 trading days before the first tick import, then continuous |
+
+Continuous codes (`TXF`) pick the near month of each day from the stored contracts, so import every
+month that was the near month (the daily report includes all listed months). The data-coverage
+answer for `TWFutures:TXF` reports the first daily bar for `1D`/`1W` and the first 1m bar for
+shorter timeframes. A single `1D`/`1W` backtest still spans at most 2 years.
+
 ## HTTP API (v1)
 
 Every request, including `/health`, must send `X-Sidecar-Token: <FUBON_SIDECAR_TOKEN>`;

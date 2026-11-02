@@ -103,6 +103,46 @@ $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=afterhours'
 個交易日內仍可取得的資料；更早的日期要等期交所歷史匯入。策略讀取 `TWStock` 分 K／小時 K 時先讀這張表，
 最近幾天再由 sidecar 補齊；回測的 data-coverage 會回報表中最早的一根。
 
+## 7. 匯入期交所期貨歷史
+
+富邦沒有期貨歷史 K 線，過去的 `TWFutures` K 棒改由期交所公開資料補，寫進同一張 `qd_tw_klines`，
+`source=taifex`。在 `backend_api_python/` 下、用後端的資料庫設定執行：
+
+```bash
+# 日 K（期交所每日行情下載，每個商品每個月一次請求，間隔 1 秒）
+python scripts/import_taifex_history.py --daily --from 2020-01-01 --to 2026-10-31 --products TX,MTX,TMF
+# 已從期交所下載的逐筆檔轉 1 分 K（Daily_YYYY_MM_DD 的 .csv/.zip，可給檔案或目錄）
+python scripts/import_taifex_history.py --ticks ~/Downloads/taifex/
+# 直接下載並匯入指定交易日的逐筆檔（期交所只保留近 30 日）
+python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
+```
+
+- **商品代號：** 期交所的 `TX`、`MTX`、`TMF`、`TE`、`TF`、`ZEF`、`ZFF` 分別存成富邦代碼 `TXF`、`MXF`、
+  `TMF`、`EXF`、`FXF`、`ZEF`、`ZFF`（`--products` 兩種寫法都接受）。依月份合約存（`TXFH6`），
+  週別合約（`202605W4`）與價差不匯入。
+- **每日行情 → `timeframe=1D`：** 每個合約、盤別、交易日一根，時間標在台北時間 00:00。`一般` 是日盤；
+  日期 D 的 `盤後` 是 D 當天 15:00 開盤的夜盤，歸屬下一個交易日。沒資料的月份列在 `empty`，失敗的月份
+  列在 `failed`（指令回傳 1），重跑同一個指令即可補。
+- **逐筆檔 → `timeframe=1m`：** 依分鐘彙總；成交數量(B+S) 是買賣雙邊合計，口數為數量除以 2。盤別依該分鐘
+  判斷（日盤 08:30-14:00、夜盤 14:50-05:10）。檔案可以是 Big5 或 UTF-8。
+- **可重跑：** 所有寫入都是 upsert，已有 `source=fubon` 的 K 棒不會被覆蓋。
+- **每日補缺口：** `quantdinger.tasks.taifex_tick_backfill`（maintenance queue，每
+  `TAIFEX_TICK_BACKFILL_INTERVAL_SEC` 秒，預設 3600 秒）下載今天以前最近 5 個交易日的逐筆檔
+  （商品依 `TAIFEX_TICK_BACKFILL_PRODUCTS`，預設 `TX,MTX`），補上富邦累積漏掉的分鐘。每天的結果以
+  symbol `TAIFEX_TICKS` 記在 `qd_tw_kline_collect_status`；失敗（例如檔案還沒公布）下一次排程重抓。
+  `TAIFEX_TICK_BACKFILL_ENABLED=false` 可關閉；`FUBON_SIDECAR_TOKEN` 為空時自動略過。
+
+**匯入後可回測的範圍：**
+
+| 週期 | 資料來源 | 最早可到 |
+|---|---|---|
+| `1D`、`1W` | 有 1 分 K 的日子用 1 分 K，其餘用匯入的日 K | `--daily --from` 的日期（期交所每日行情可回溯多年） |
+| `1m` … `4H` | 只用已存的 1 分 K（富邦累積 + 期交所逐筆檔） | 第一次匯入逐筆檔往前約 30 個交易日，之後連續 |
+
+連續代碼（`TXF`）每天從已存的合約中取當時的近月，所以要匯入曾經是近月的每個月份（每日行情本身就包含所有
+掛牌月份）。`TWFutures:TXF` 的 data-coverage 在 `1D`／`1W` 回報第一根日 K，較短週期回報第一根 1 分 K。
+單次 `1D`／`1W` 回測區間仍最長 2 年。
+
 ## HTTP 介面（v1）
 
 所有請求（含 `/health`）都必須帶 `X-Sidecar-Token: <FUBON_SIDECAR_TOKEN>`，否則回

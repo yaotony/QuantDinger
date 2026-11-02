@@ -23,7 +23,9 @@ Data:
     current session. Every other timeframe is built from 1m bars: intraday ones by UTC
     bucket resampling; 1D groups the night session with the following day session
     (labelled at Asia/Taipei midnight of the trading day); 1W groups trading days by
-    ISO week (labelled at Monday Asia/Taipei midnight).
+    ISO week (labelled at Monday Asia/Taipei midnight). Trading days without 1m bars
+    fall back to stored ``1D`` session rows imported from the TAIFEX daily report
+    (``app.services.taifex_history``), which reach back years before the 1m history.
 
 Continuous codes use the front month without price adjustment
 (``ROLL_METHOD = "front_month_unadjusted"``): each instant reads the contract that was
@@ -63,6 +65,8 @@ logger = get_logger(__name__)
 
 MARKET = "TWFutures"
 STORE_TIMEFRAME = "1m"
+# Daily session bars imported from the TAIFEX daily report (app.services.taifex_history).
+STORE_DAILY_TIMEFRAME = "1D"
 STORE_SESSION_DAY = "regular"
 STORE_SESSION_NIGHT = "afterhours"
 
@@ -300,6 +304,52 @@ class TWFuturesDataSource(TWStockDataSource):
             if start_ts <= int(row["time"]) < end_ts and bar_session(int(row["time"])) in allowed
         ]
 
+    def _load_stored_daily(self, parsed: TWFuturesSymbol, start_ts: int, end_ts: int) -> List[Dict[str, Any]]:
+        """Trading-day bars from stored ``1D`` session rows (TAIFEX daily report imports).
+
+        Each row is labelled at Asia/Taipei midnight of its trading day, so the
+        near-month piece containing that label picks the contract. A day's night and
+        day rows are combined like :func:`aggregate_daily` (night open, day close).
+        """
+        sessions = self._store_sessions(parsed.session)  # night first, then day
+        by_day: Dict[int, Dict[str, Any]] = {}
+        for contract, seg_start, seg_end in self._segments(parsed, start_ts, end_ts):
+            for session in sessions:
+                try:
+                    rows = self.kline_store.load_bars(
+                        market=MARKET, symbol=contract, session=session,
+                        timeframe=STORE_DAILY_TIMEFRAME, start_ts=seg_start, end_ts=seg_end,
+                    )
+                except Exception as exc:  # database unavailable: minute data only
+                    logger.warning("TWFutures: stored daily bars unavailable for %s: %s", contract, exc)
+                    return []
+                for row in rows:
+                    label = int(row["time"])
+                    current = by_day.get(label)
+                    if current is None:
+                        by_day[label] = dict(row)
+                        continue
+                    current["high"] = max(current["high"], row["high"])
+                    current["low"] = min(current["low"], row["low"])
+                    current["close"] = row["close"]
+                    current["volume"] = round(current["volume"] + row["volume"], 2)
+        return [by_day[label] for label in sorted(by_day)]
+
+    def _daily_bars(self, parsed: TWFuturesSymbol, start_ts: int, end_ts: int) -> List[Dict[str, Any]]:
+        """Trading-day bars: from 1m bars where present, else from stored daily rows."""
+        stored_daily = self._load_stored_daily(parsed, start_ts, end_ts)
+        try:
+            minutes = self._load_minutes(parsed, start_ts, end_ts)
+        except FubonSidecarError:
+            if not stored_daily:
+                raise
+            minutes = []
+        from_minutes = aggregate_daily(minutes, self._is_trading_day)
+        covered = {int(bar["time"]) for bar in from_minutes}
+        merged = from_minutes + [bar for bar in stored_daily if int(bar["time"]) not in covered]
+        merged.sort(key=lambda bar: int(bar["time"]))
+        return merged
+
     def _window(
         self,
         tf: str,
@@ -344,13 +394,12 @@ class TWFuturesDataSource(TWStockDataSource):
         lim = max(int(limit or 300), 1)
 
         start_ts, end_ts = self._window(tf, lim, parsed.session, before_time, after_time)
-        minutes = self._load_minutes(parsed, start_ts, end_ts)
         if tf == "1m":
-            klines = minutes
+            klines = self._load_minutes(parsed, start_ts, end_ts)
         elif tf in INTRADAY_TIMEFRAMES:
-            klines = self._resample(minutes, TIMEFRAME_SECONDS[tf])
+            klines = self._resample(self._load_minutes(parsed, start_ts, end_ts), TIMEFRAME_SECONDS[tf])
         else:
-            klines = aggregate_daily(minutes, self._is_trading_day)
+            klines = self._daily_bars(parsed, start_ts, end_ts)
             if tf == "1W":
                 klines = aggregate_weekly(klines)
 
@@ -394,26 +443,39 @@ class TWFuturesDataSource(TWStockDataSource):
     def get_earliest_kline_time(self, symbol: str, timeframe: str) -> Optional[int]:
         """First stored 1m bar of the contract (or of any month for a continuous code).
 
-        Daily / weekly: Asia/Taipei midnight of that bar's trading day.
+        Daily / weekly: Asia/Taipei midnight of that bar's trading day, or the first
+        stored daily bar (TAIFEX daily report import) when that is earlier.
         """
         parsed = parse_tw_futures_symbol(symbol)
         tf = normalize_tw_timeframe(timeframe)
         if parsed is None or tf is None:
             return None
         pattern = parsed.contract or f"{parsed.product}__"
+        sessions = self._store_sessions(parsed.session)
         try:
             earliest = self.kline_store.earliest_bar_time_like(
                 market=MARKET,
                 symbol_pattern=pattern,
-                sessions=self._store_sessions(parsed.session),
+                sessions=sessions,
                 timeframe=STORE_TIMEFRAME,
             )
+            earliest_daily = None
+            if tf in ("1D", "1W"):
+                earliest_daily = self.kline_store.earliest_bar_time_like(
+                    market=MARKET,
+                    symbol_pattern=pattern,
+                    sessions=sessions,
+                    timeframe=STORE_DAILY_TIMEFRAME,
+                )
         except Exception as exc:
-            logger.warning("TWFutures: stored earliest 1m bar unavailable for %s: %s", symbol, exc)
+            logger.warning("TWFutures: stored earliest bar unavailable for %s: %s", symbol, exc)
             return None
-        if earliest is None:
-            return None
-        if tf in ("1D", "1W"):
+        if tf not in ("1D", "1W"):
+            return int(earliest) if earliest is not None else None
+        candidates: List[int] = []
+        if earliest is not None:
             day = trading_day_of(int(earliest), self._is_trading_day)
-            return _midnight_ts(day) if day is not None else int(earliest)
-        return int(earliest)
+            candidates.append(_midnight_ts(day) if day is not None else int(earliest))
+        if earliest_daily is not None:
+            candidates.append(int(earliest_daily))
+        return min(candidates) if candidates else None

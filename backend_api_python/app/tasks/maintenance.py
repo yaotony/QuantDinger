@@ -108,3 +108,14 @@ def run_tw_kline_collect():
     from app.services.tw_kline_collector import run_tw_kline_collection
 
     return run_tw_kline_collection()
+
+
+@celery_app.task(
+    name="quantdinger.tasks.taifex_tick_backfill",
+    soft_time_limit=max(60, int(os.getenv("TAIFEX_TICK_BACKFILL_TIME_LIMIT_SEC", "900"))),
+)
+def run_taifex_tick_backfill():
+    """Fill Fubon 1m gaps from the previous trading days' TAIFEX tick files."""
+    from app.services.taifex_tick_backfill import run_taifex_tick_backfill as run_backfill
+
+    return run_backfill()
