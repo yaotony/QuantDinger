@@ -916,7 +916,9 @@ class MultiAssetSimulationBroker:
                     requested_quantity=abs(requested_delta),
                 )))
                 continue
-            liquidity_cap = None if forced_liquidation else self._liquidity_cap(bar, lot_size)
+            liquidity_cap = None if forced_liquidation else self._liquidity_cap(
+                bar, lot_size, units_per_volume=self._units_per_volume(order.symbol, rules)
+            )
             if liquidity_cap is not None and abs(delta) > liquidity_cap:
                 delta = math.copysign(liquidity_cap, delta)
                 exact_close_remainder = False
@@ -1276,11 +1278,32 @@ class MultiAssetSimulationBroker:
         return math.copysign(units * lot_size, value) if units else 0.0
 
     @staticmethod
-    def _liquidity_cap(bar: Mapping[str, Any] | None, lot_size: float) -> float | None:
+    def _units_per_volume(symbol: str, rules: InstrumentRules) -> float:
+        """Order-quantity units represented by one unit of bar ``volume``.
+
+        TWFutures orders are sized in index units (one contract equals
+        ``contract_size`` units) while TAIFEX bar volume counts contracts, so
+        the volume must be scaled before it is compared with an order. Other
+        markets report volume in the same units as order quantities.
+        """
+        if str(symbol or "").strip().lower().startswith("twfutures:"):
+            contract_size = float(rules.contract_size or 0.0)
+            if contract_size > 0:
+                return contract_size
+        return 1.0
+
+    @staticmethod
+    def _liquidity_cap(
+        bar: Mapping[str, Any] | None,
+        lot_size: float,
+        *,
+        units_per_volume: float = 1.0,
+    ) -> float | None:
         volume = float((bar or {}).get("volume") or 0.0)
         if volume <= 0:
             return None
-        cap = volume * 0.1
+        scale = float(units_per_volume or 0.0)
+        cap = volume * (scale if scale > 0 else 1.0) * 0.1
         units = math.floor(cap / lot_size + 1e-10)
         return units * lot_size if units else 0.0
 
