@@ -222,6 +222,44 @@ def test_collection_status_and_watchlist(tw_kline_schema):
 
 
 @pytest.mark.integration
+def test_closed_day_repair_queries(tw_kline_schema):
+    """Find / delete 1D rows at an instant and mark failed statuses (issue #86)."""
+    repo = TWKlineRepository()
+    closed = _ts("2026-10-22T16:00:00")  # 2026-10-23 00:00 Asia/Taipei
+    other = _ts("2026-10-21T16:00:00")
+    daily = {"market": "TWFutures", "timeframe": "1D"}
+    repo.upsert_bars(**daily, symbol="TXFK6", session="afterhours", bars=[_bar("2026-10-22T16:00:00", 47482)],
+                     source="taifex")
+    repo.upsert_bars(**daily, symbol="TXFK6", session="regular", bars=[_bar("2026-10-21T16:00:00", 47450)],
+                     source="taifex")
+
+    found = repo.find_bars_at(market="TWFutures", timeframe="1D", bar_times=[closed])
+    assert [(row["symbol"], row["session"], row["time"], row["close"], row["source"]) for row in found] == [
+        ("TXFK6", "afterhours", closed, 47482.0, "taifex"),
+    ]
+    assert repo.find_bars_at(market="TWFutures", timeframe="1m", bar_times=[closed]) == []
+    assert repo.delete_bars([("TWFutures", "TXFK6", "afterhours", "1D", closed)]) == 1
+    assert repo.find_bars_at(market="TWFutures", timeframe="1D", bar_times=[closed, other])[0]["time"] == other
+    assert _count(tw_kline_schema) == 1
+
+    day = date(2026, 10, 23)
+    repo.record_status(market="TWFutures", symbol="TAIFEX_TICKS", session="all", trade_date=day,
+                       status="failed", error="TAIFEX header not found")
+    repo.record_status(market="TWStock", symbol="2330", session="regular", trade_date=day, status="success")
+    failed = repo.find_statuses(trade_dates=[day], status="failed")
+    assert [(row["symbol"], row["attempts"], row["last_error"]) for row in failed] == [
+        ("TAIFEX_TICKS", 1, "TAIFEX header not found"),
+    ]
+    repo.mark_statuses([("TWFutures", "TAIFEX_TICKS", "all", day)], from_status="failed", to_status="missed",
+                       note="market closed all day")
+    assert repo.find_statuses(trade_dates=[day], status="failed") == []
+    assert repo.load_statuses(day) == {
+        ("TWFutures", "TAIFEX_TICKS", "all", day): "missed",
+        ("TWStock", "2330", "regular", day): "success",
+    }
+
+
+@pytest.mark.integration
 def test_provider_reads_stored_minutes(tw_kline_schema, monkeypatch):
     from app.data_sources.tw_stock import TWStockDataSource
 

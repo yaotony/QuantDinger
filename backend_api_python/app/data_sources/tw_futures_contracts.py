@@ -13,12 +13,16 @@ month. The night session that evening already trades the next contract.
 """
 from __future__ import annotations
 
+import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time as dtime, timedelta
 from functools import lru_cache
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 MONTH_CODES = "ABCDEFGHIJKL"
@@ -116,6 +120,49 @@ def next_month(year: int, month: int) -> Tuple[int, int]:
 
 
 # --------------------------------------------------------------------------- calendar
+# Unscheduled full-day closures of TWSE and TAIFEX (typhoon days and similar)
+# that the ``exchange_calendars`` XTAI calendar does not know about. Every
+# Taiwan trading-day check goes through :func:`xtai_is_trading_day`, so a day
+# listed here is closed for TWStock, TWFutures, the collectors and the backfills.
+# Add newly announced closures here (with the reason); until a release ships,
+# operators can add them through ``TW_MARKET_CLOSED_DAYS``.
+BUILTIN_TW_MARKET_CLOSED_DAYS: Dict[date, str] = {
+    date(2026, 10, 23): "typhoon day: TWSE and TAIFEX closed all day",
+}
+
+TW_MARKET_CLOSED_DAYS_ENV = "TW_MARKET_CLOSED_DAYS"
+
+
+@lru_cache(maxsize=32)
+def _parse_closed_days(raw: str) -> FrozenSet[date]:
+    out = set()
+    for item in raw.replace(";", ",").split(","):
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            out.add(date.fromisoformat(text))
+        except ValueError:
+            logger.warning("%s: ignoring invalid date %r (expected YYYY-MM-DD)", TW_MARKET_CLOSED_DAYS_ENV, text)
+    return frozenset(out)
+
+
+def configured_closed_days(raw: Optional[str] = None) -> FrozenSet[date]:
+    """Closed days from ``TW_MARKET_CLOSED_DAYS`` (comma-separated ISO dates)."""
+    text = os.getenv(TW_MARKET_CLOSED_DAYS_ENV, "") if raw is None else raw
+    return _parse_closed_days(str(text or ""))
+
+
+def tw_market_closed_days() -> FrozenSet[date]:
+    """Built-in unscheduled closures plus the configured ones."""
+    return frozenset(BUILTIN_TW_MARKET_CLOSED_DAYS) | configured_closed_days()
+
+
+def is_tw_market_closed_day(day: date) -> bool:
+    """Whether ``day`` is an unscheduled closure the XTAI calendar does not list."""
+    return day in BUILTIN_TW_MARKET_CLOSED_DAYS or day in configured_closed_days()
+
+
 @lru_cache(maxsize=4096)
 def _xtai_is_session(day: date) -> bool:
     import pandas as pd
@@ -126,7 +173,12 @@ def _xtai_is_session(day: date) -> bool:
 
 
 def xtai_is_trading_day(day: date) -> bool:
-    """XTAI trading day; falls back to Monday-Friday when the calendar is unavailable."""
+    """XTAI trading day, minus the unscheduled closures (:func:`tw_market_closed_days`).
+
+    Falls back to Monday-Friday when the calendar is unavailable.
+    """
+    if is_tw_market_closed_day(day):
+        return False
     try:
         return _xtai_is_session(day)
     except Exception:

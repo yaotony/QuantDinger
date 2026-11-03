@@ -9,7 +9,12 @@ from typing import Any
 
 import pandas as pd
 
-from app.services.market_schedule import CALENDAR_BY_MARKET, equity_bar_session_date
+from app.services.market_schedule import (
+    CALENDAR_BY_MARKET,
+    MarketScheduleError,
+    _calendar as _market_calendar,
+    equity_bar_session_date,
+)
 
 __all__ = [
     "DEFAULT_INFORMATION_RATIO_BANDS",
@@ -581,11 +586,10 @@ def _are_consecutive_equity_sessions(start: pd.Timestamp, end: pd.Timestamp, mar
     if start_date == end_date:
         return False
     try:
-        import exchange_calendars
-
-        calendar = exchange_calendars.get_calendar(calendar_code)
+        # Shared lookup so Taiwan markets also skip unscheduled closures (typhoon days).
+        calendar = _market_calendar(market)
         sessions = calendar.sessions_in_range(pd.Timestamp(start_date), pd.Timestamp(end_date))
-    except (ImportError, ValueError):
+    except (ImportError, ValueError, MarketScheduleError):
         return False
     if len(sessions) != 2:
         return False

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Optional
+from functools import lru_cache
+from typing import FrozenSet, Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -224,7 +225,32 @@ def _calendar(market: str):
     code = CALENDAR_BY_MARKET.get(str(market or "").strip())
     if not code:
         raise MarketScheduleError("portfolio.marketCalendarUnsupported")
+    if code == "XTAI":
+        from app.data_sources.tw_futures_contracts import tw_market_closed_days
+
+        closed = tw_market_closed_days()
+        if closed:
+            return _xtai_calendar_with_closures(closed)
     return exchange_calendars.get_calendar(code)
+
+
+@lru_cache(maxsize=8)
+def _xtai_calendar_with_closures(closed_days: FrozenSet[date]):
+    """XTAI calendar that also treats ``closed_days`` (typhoon days etc.) as holidays.
+
+    Keyed on the closure set, so a changed ``TW_MARKET_CLOSED_DAYS`` builds a new
+    calendar while unchanged settings reuse the cached one.
+    """
+    from exchange_calendars.exchange_calendar_xtai import XTAIExchangeCalendar
+
+    extra = [pd.Timestamp(day) for day in sorted(closed_days)]
+
+    class _XTAIWithClosures(XTAIExchangeCalendar):
+        @property
+        def adhoc_holidays(self):
+            return list(super().adhoc_holidays) + extra
+
+    return _XTAIWithClosures()
 
 
 def _is_continuous_market(market: str) -> bool:
