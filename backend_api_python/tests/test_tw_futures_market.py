@@ -443,6 +443,123 @@ def test_backtest_rejects_a_partial_contract():
     assert result.get("totalExecutions", 0) == 0
 
 
+def _five_minute_frame(volume):
+    stamps = pd.date_range("2026-03-03 08:45", periods=12, freq="5min", tz="Asia/Taipei")
+    index = pd.DatetimeIndex([item.tz_convert("UTC").tz_localize(None) for item in stamps])
+    prices = [20000.0 + 10 * step for step in range(len(stamps))]
+    return pd.DataFrame(
+        {"open": prices, "high": prices, "low": prices, "close": prices, "volume": [volume] * len(stamps)},
+        index=index,
+    )
+
+
+def _run_five_minute_backtest(code, volume):
+    frame = _five_minute_frame(volume)
+
+    def fetch(market, *_args, **_kwargs):
+        assert market == "TWFutures"
+        return frame.copy()
+
+    service = StrategyV2BacktestService(repository=object(), frame_fetcher=fetch, instrument_rules_provider=_NoRules())
+    _, result = service.run(
+        user_id=1, code=code.replace('frequency="1h"', 'frequency="5m"'),
+        start_date=datetime(2026, 3, 3), end_date=datetime(2026, 3, 3, 23, 59, 59),
+        initial_capital=100_000_000, commission=0, slippage=0, persist=False,
+    )
+    return result
+
+
+@pytest.mark.parametrize(
+    "symbol, volume, expected_cap",
+    [
+        # 100 contracts traded: 10% is 10 contracts, i.e. 2,000 TXF index units.
+        ("TWFutures:TXF", 100, 2_000),
+        ("TWFutures:TXFH6", 100, 2_000),
+        ("TWFutures:MXF", 100, 500),
+        # Fewer than ten contracts traded still caps below one contract.
+        ("TWFutures:TXF", 5, 0),
+    ],
+)
+def test_liquidity_cap_counts_tw_futures_volume_in_contracts(symbol, volume, expected_cap):
+    from app.services.strategy_v2.runtime import MultiAssetSimulationBroker as Broker
+
+    rules = default_rules_for_symbol(symbol)
+    lot_size = Broker._lot_size(symbol, rules)
+    cap = Broker._liquidity_cap(
+        {"volume": volume}, lot_size, units_per_volume=Broker._units_per_volume(symbol, rules)
+    )
+    assert cap == pytest.approx(expected_cap)
+
+
+@pytest.mark.parametrize(
+    "symbol, volume, expected_cap",
+    [
+        ("Crypto:BTC/USDT", 2.5, 0.25),
+        ("USStock:AAPL", 1_234, 123),
+        ("TWStock:2330.TW", 5_000, 500),
+    ],
+)
+def test_liquidity_cap_keeps_other_markets_in_order_units(symbol, volume, expected_cap):
+    from app.services.strategy_v2.runtime import MultiAssetSimulationBroker as Broker
+
+    rules = default_rules_for_symbol(symbol)
+    assert Broker._units_per_volume(symbol, rules) == 1.0
+    cap = Broker._liquidity_cap(
+        {"volume": volume}, Broker._lot_size(symbol, rules),
+        units_per_volume=Broker._units_per_volume(symbol, rules),
+    )
+    assert cap == pytest.approx(expected_cap)
+
+
+def _execute_txf_order(quantity, volume):
+    from app.services.strategy_v2.data import MultiAssetDataPortal
+    from app.services.strategy_v2.runtime import MultiAssetSimulationBroker, OrderIntent
+
+    frame = _five_minute_frame(volume)
+    portal = MultiAssetDataPortal({SYMBOL: frame})
+    portal.set_clock(frame.index[0], include_current=True)
+    broker = MultiAssetSimulationBroker(initial_capital=100_000_000, commission=0, slippage=0)
+    broker.execute([OrderIntent(SYMBOL, "quantity", quantity)], portal, frame.index[0])
+    return broker
+
+
+def test_simulated_broker_fills_one_txf_contract_on_a_5m_bar():
+    broker = _execute_txf_order(200, volume=300)
+
+    assert [event["statusReason"] for event in broker.order_ledger if event["status"] == "rejected"] == []
+    assert broker.executions[-1]["quantity"] == pytest.approx(200)
+    assert broker.portfolio.positions[SYMBOL].amount == pytest.approx(200)
+
+
+def test_simulated_broker_caps_txf_orders_at_ten_percent_of_bar_contracts():
+    # 50 contracts requested against 100 traded: 10 contracts (2,000 units) fill.
+    broker = _execute_txf_order(10_000, volume=100)
+
+    assert broker.executions[-1]["quantity"] == pytest.approx(2_000)
+    assert broker.portfolio.positions[SYMBOL].amount == pytest.approx(2_000)
+
+
+def test_five_minute_backtest_fills_one_contract_at_ordinary_volume():
+    # 300 contracts per 5m bar used to cap TXF at 300 * 0.1 / 200 = 0 lots.
+    result = _run_five_minute_backtest(_HOLD_STRATEGY, volume=300)
+
+    trade = result["closedTrades"][0]
+    assert trade["quantity"] == 200
+    assert trade["profit"] == pytest.approx(200 * 30)
+
+
+def test_five_minute_backtest_still_caps_orders_above_the_volume_share():
+    # 50 contracts against 100 traded per bar: only 10 contracts may fill.
+    code = _HOLD_STRATEGY.replace("order(g.symbol, 200,", "order(g.symbol, 10_000,").replace(
+        "order(g.symbol, -200,", "order(g.symbol, -10_000,"
+    )
+    result = _run_five_minute_backtest(code, volume=100)
+
+    assert result["closedTrades"]
+    assert all(trade["quantity"] <= 2_000 for trade in result["closedTrades"])
+    assert result["closedTrades"][0]["quantity"] == 2_000
+
+
 def test_backtest_rejects_unknown_session():
     from app.services.strategy_v2.contract import StrategyV2ContractError
 
