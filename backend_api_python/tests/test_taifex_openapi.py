@@ -209,12 +209,17 @@ class _FakeResponse:
         self._body = body
         self._fail_after = fail_after
         self.closed = False
+        self.bytes_read = 0
 
     def iter_content(self, chunk_size: int):
         for index, start in enumerate(range(0, len(self._body), chunk_size)):
             if index == self._fail_after:
                 raise requests.exceptions.ChunkedEncodingError("connection reset")
-            yield self._body[start:start + chunk_size]
+            if self.closed:
+                raise AssertionError("read after close")
+            chunk = self._body[start:start + chunk_size]
+            self.bytes_read += len(chunk)
+            yield chunk
 
     def close(self):
         self.closed = True
@@ -225,9 +230,13 @@ class _FakeSession:
         self.headers: Dict[str, str] = {}
         self.outcomes = outcomes
         self.requests: List[tuple] = []
+        self.params: List[Dict[str, str]] = []
+        self.sent_headers: List[Dict[str, str]] = []
 
-    def request(self, method: str, url: str, timeout: float, stream: bool):
+    def request(self, method: str, url: str, *, params=None, headers=None, timeout: float, stream: bool):
         self.requests.append((method, url, timeout, stream))
+        self.params.append(dict(params or {}))
+        self.sent_headers.append({**self.headers, **(headers or {})})
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -248,6 +257,188 @@ def test_http_fetcher_streams_with_timeout(monkeypatch):
     assert list(result) == json.loads(TICK_FIXTURE)
     assert session.requests == [("GET", "https://example.test/v1/TimeAndSalesData", 12, True)]
     assert result.data_date == date(2026, 10, 30)
+
+
+def test_http_fetcher_cache_bust_is_unique_per_request_and_ua_is_a_browser(monkeypatch):
+    outcomes = [requests.Timeout("slow"), _FakeResponse(200, b"[]"), _FakeResponse(200, b"[]"),
+                _FakeResponse(200, headers={"Last-Modified": LAST_MODIFIED})]
+    session = _install_session(monkeypatch, outcomes)
+    # A frozen clock: values must still differ between requests (and retries).
+    fetcher = http_fetcher(sleep=lambda _s: None, clock=lambda: 1793658000.123)
+    client = TaifexOpenApiClient(fetcher=fetcher)
+    list(client.fetch("DailyMarketReportFut"))  # timeout + retry
+    list(client.fetch("DailyMarketReportFut"))
+    client.last_modified("DailyMarketReportFut")
+    busts = [params[taifex_openapi.CACHE_BUST_PARAM] for params in session.params]
+    assert len(busts) == 4 and len(set(busts)) == 4
+    assert busts[0] == "1793658000123" and all(value.isdigit() for value in busts)
+    for headers in session.sent_headers:
+        agent = headers["User-Agent"]
+        assert agent == taifex_openapi.BROWSER_USER_AGENT
+        assert agent.startswith("Mozilla/5.0") and "Chrome/" in agent and "QuantDinger" not in agent
+
+
+def test_http_fetcher_cache_bust_follows_the_clock(monkeypatch):
+    times = iter([100.0, 100.5])
+    session = _install_session(monkeypatch, [_FakeResponse(200, b"[]"), _FakeResponse(200, b"[]")])
+    fetcher = http_fetcher(sleep=lambda _s: None, clock=lambda: next(times))
+    fetcher("GET", f"{DEFAULT_BASE_URL}/X")
+    fetcher("GET", f"{DEFAULT_BASE_URL}/X")
+    assert [params["_"] for params in session.params] == ["100000", "100500"]
+
+
+# --- probe --------------------------------------------------------------------
+
+TICK_SIZE = 227_000_000
+
+
+def _ranged_session(monkeypatch, body: str, *, status: int = 206, headers: Optional[Dict[str, str]] = None):
+    data = body.encode("utf-8")
+    if status == 206:
+        sent = {"Content-Range": f"bytes 0-300/{TICK_SIZE}", "Content-Length": str(min(len(data), 301)),
+                "Last-Modified": LAST_MODIFIED}
+        data = data[:301]
+    else:
+        sent = {"Content-Length": str(len(data)), "Last-Modified": LAST_MODIFIED}
+    sent.update(headers or {})
+    response = _FakeResponse(status, data, sent)
+    return _install_session(monkeypatch, [response]), response
+
+
+def test_probe_partial_content_reads_trading_day_size_and_last_modified(monkeypatch):
+    session, response = _ranged_session(monkeypatch, TICK_FIXTURE)
+    fetcher = http_fetcher(sleep=lambda _s: None)
+    probe = TaifexOpenApiClient(fetcher=fetcher).probe("TimeAndSalesData", is_trading_day=lambda d: d.weekday() < 5)
+    sent = session.sent_headers[0]
+    assert sent["Range"] == "bytes=0-300" and sent["Accept-Encoding"] == "identity"
+    assert "If-Modified-Since" not in sent
+    assert session.params[0]["_"].isdigit()
+    assert probe.status == 206 and not probe.not_modified and not probe.empty
+    assert probe.size == TICK_SIZE
+    assert probe.last_modified == datetime(2026, 11, 1, 22, 36, 1, tzinfo=timezone.utc)
+    # The first trade is the night session opened 10/29 20:40, part of trading day 10/30.
+    assert probe.first_date == date(2026, 10, 29)
+    assert probe.trading_day == date(2026, 10, 30)
+    assert response.closed
+
+
+def test_probe_first_row_cut_by_the_range_keeps_complete_fields():
+    # A daily-report row with Chinese text is longer than 301 bytes.
+    first = json.loads(DAILY_FIXTURE.lstrip("﻿"))[0]
+    first["Contract"] = "臺股期貨" * 20
+    body = json.dumps([first], ensure_ascii=False).encode("utf-8")
+    assert len(body) > 301
+
+    def fetch(method, url, headers=None):
+        return RawResponse(headers={"Content-Range": f"bytes 0-300/{len(body)}"}, chunks=[body[:301]], status=206)
+
+    probe = TaifexOpenApiClient(fetcher=fetch).probe("DailyMarketReportFut")
+    assert probe.first_row["Date"] == "20261030"
+    assert "TradingSession" not in probe.first_row  # beyond the range
+    assert probe.first_date == probe.trading_day == date(2026, 10, 30)  # daily rows: Date is the trading day
+    assert probe.size == len(body)
+
+
+def test_probe_not_modified_downloads_nothing(monkeypatch):
+    response = _FakeResponse(304, b"", {})
+    session = _install_session(monkeypatch, [response])
+    fetcher = http_fetcher(sleep=lambda _s: None)
+    since = datetime(2026, 11, 1, 22, 36, 1, tzinfo=timezone.utc)
+    probe = TaifexOpenApiClient(fetcher=fetcher).probe("TimeAndSalesData", if_modified_since=since)
+    assert session.sent_headers[0]["If-Modified-Since"] == LAST_MODIFIED
+    assert probe.not_modified and probe.status == 304 and not probe.empty
+    assert probe.first_row is None and probe.trading_day is None
+    assert probe.last_modified == since
+    assert response.closed and response.bytes_read == 0
+
+
+def test_probe_if_modified_since_still_reads_when_changed(monkeypatch):
+    session, _ = _ranged_session(monkeypatch, DAILY_FIXTURE, headers={"Last-Modified": "Mon, 02 Nov 2026 22:36:01 GMT"})
+    fetcher = http_fetcher(sleep=lambda _s: None)
+    probe = TaifexOpenApiClient(fetcher=fetcher).probe("DailyMarketReportFut", if_modified_since=LAST_MODIFIED)
+    assert session.sent_headers[0]["If-Modified-Since"] == LAST_MODIFIED
+    assert not probe.not_modified and probe.trading_day == date(2026, 10, 30)
+    assert probe.last_modified == datetime(2026, 11, 2, 22, 36, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        ({"Date": "20261029", "TimeOfTrades": "150000"}, date(2026, 10, 30)),  # night before midnight
+        ({"Date": "20261030", "TimeOfTrades": "013000"}, date(2026, 10, 30)),  # night after midnight
+        ({"Date": "20261030", "TimeOfTrades": "084500"}, date(2026, 10, 30)),  # day session
+        ({"Date": "20261030", "TimeOfTrades": "150000"}, date(2026, 11, 2)),  # Friday night -> Monday
+        ({"Date": "20261022", "TimeOfTrades": "150000"}, date(2026, 10, 27)),  # skips 10/23, 10/26 holidays
+        ({"Date": "20261030"}, date(2026, 10, 30)),  # daily report row
+    ],
+)
+def test_probe_converts_the_first_row_to_its_trading_day(row, expected):
+    holidays = {date(2026, 10, 23), date(2026, 10, 26)}
+
+    def fetch(method, url, headers=None):
+        return RawResponse(headers={}, chunks=_chunks(json.dumps([row]), 5), status=206)
+
+    probe = TaifexOpenApiClient(fetcher=fetch).probe(
+        "TimeAndSalesData", is_trading_day=lambda d: d.weekday() < 5 and d not in holidays,
+    )
+    assert probe.trading_day == expected
+    assert probe.first_date == taifex_openapi.parse_row_date(row["Date"])
+
+
+def test_probe_when_server_ignores_range_reads_only_the_head(monkeypatch):
+    rows = json.loads(TICK_FIXTURE) * 5000  # about 1.2 MB
+    body = json.dumps(rows)
+    _session, response = _ranged_session(monkeypatch, body, status=200)
+    fetcher = http_fetcher(chunk_size=64, sleep=lambda _s: None)
+    probe = TaifexOpenApiClient(fetcher=fetcher).probe("TimeAndSalesData")
+    assert probe.status == 200 and probe.size == len(body.encode("utf-8"))
+    assert probe.trading_day == date(2026, 10, 30)
+    assert response.closed
+    assert response.bytes_read <= 301 + 64  # stopped after the probe range, not the whole body
+
+
+def test_probe_with_a_fetcher_ignoring_range_stops_the_stream():
+    feeder = _Feeder(_chunks(json.dumps(json.loads(TICK_FIXTURE) * 100), 16))
+    closed: List[bool] = []
+
+    def stream():
+        try:
+            yield from feeder
+        finally:
+            closed.append(True)
+
+    def fetch(method, url, headers=None):
+        assert headers["Range"] == "bytes=0-300"
+        return RawResponse(headers={}, chunks=stream(), status=200)
+
+    probe = TaifexOpenApiClient(fetcher=fetch).probe("TimeAndSalesData")
+    assert probe.first_date == date(2026, 10, 29)
+    assert feeder.consumed == 19  # ceil(301 / 16)
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("body", ["<html><body>Attention Required! | Cloudflare</body></html>", "", '{"a":"b"}', "[1]"])
+def test_probe_non_json_head_is_a_format_error(body: str):
+    def fetch(method, url, headers=None):
+        return RawResponse(headers={}, chunks=_chunks(body, 4), status=200)
+
+    with pytest.raises(TaifexOpenApiFormatError):
+        TaifexOpenApiClient(fetcher=fetch).probe("TimeAndSalesData")
+
+
+def test_probe_of_an_empty_array():
+    def fetch(method, url, headers=None):
+        return RawResponse(headers={"Content-Range": "bytes 0-1/2"}, chunks=[b"[]"], status=206)
+
+    probe = TaifexOpenApiClient(fetcher=fetch).probe("TimeAndSalesData")
+    assert probe.empty and probe.first_date is None and probe.trading_day is None and probe.size == 2
+
+
+def test_format_http_date():
+    assert taifex_openapi.format_http_date(datetime(2026, 11, 1, 22, 36, 1)) == LAST_MODIFIED
+    taipei = datetime(2026, 11, 2, 6, 36, 1, tzinfo=taifex_openapi.TAIPEI_TZ)
+    assert taifex_openapi.format_http_date(taipei) == LAST_MODIFIED
+    assert taifex_openapi.format_http_date(LAST_MODIFIED) == LAST_MODIFIED
 
 
 def test_http_fetcher_retries_then_succeeds(monkeypatch):

@@ -42,8 +42,7 @@ record shows which source a day used.
 from __future__ import annotations
 
 import os
-import re
-from datetime import date, datetime, time as dtime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from app.data_sources.tw_futures import trading_day_of
@@ -56,7 +55,7 @@ from app.services.taifex_history import (
     contract_symbol,
     parse_products,
 )
-from app.services.taifex_openapi import TaifexOpenApiClient, parse_number, parse_row_date
+from app.services.taifex_openapi import TaifexOpenApiClient, parse_number, parse_row_date, row_timestamp
 from app.services.tw_kline_store import MARKET_FUTURES, STATUS_FAILED, STATUS_MISSED, STATUS_SUCCESS
 from app.utils.logger import get_logger
 
@@ -104,20 +103,6 @@ def web_zip_available(day: date, today: date) -> bool:
 
 
 # --------------------------------------------------------------------------- OpenAPI rows
-def _row_timestamp(row: Dict[str, Any]) -> Optional[int]:
-    """``Date`` + ``TimeOfTrades`` (Asia/Taipei wall time) -> unix seconds."""
-    day = parse_row_date(row.get("Date"))
-    digits = re.sub(r"\D", "", str(row.get("TimeOfTrades") or "").split(".", 1)[0])
-    clock = digits.zfill(6)
-    if day is None or not digits or len(clock) != 6:
-        return None
-    try:
-        moment = datetime.combine(day, dtime(int(clock[:2]), int(clock[2:4]), int(clock[4:6])), tzinfo=TAIPEI_TZ)
-    except ValueError:
-        return None
-    return int(moment.timestamp())
-
-
 def parse_openapi_tick(row: Dict[str, Any], wanted: Optional[set] = None) -> Optional[Tick]:
     """One ``TimeAndSalesData`` object -> :class:`Tick`, or None when skipped.
 
@@ -131,7 +116,7 @@ def parse_openapi_tick(row: Dict[str, Any], wanted: Optional[set] = None) -> Opt
         return None
     price = parse_number(row.get("TradePrice"))
     volume = parse_number(row.get("Volume(Buy+Sell)"))
-    ts = _row_timestamp(row)
+    ts = row_timestamp(row)
     if price is None or volume is None or ts is None:
         return None
     return Tick(symbol, ts, price, volume / 2.0)
@@ -154,7 +139,7 @@ def served_trading_day(first_row: Optional[Dict[str, Any]], is_trading_day: Trad
     """
     if not first_row:
         return None
-    ts = _row_timestamp(first_row)
+    ts = row_timestamp(first_row)
     if ts is None:
         return None
     return trading_day_of(ts, is_trading_day) or parse_row_date(first_row.get("Date"))
