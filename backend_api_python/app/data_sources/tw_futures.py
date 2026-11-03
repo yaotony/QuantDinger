@@ -26,8 +26,12 @@ Data:
     bucket resampling; 1D groups the night session with the following day session
     (labelled at Asia/Taipei midnight of the trading day); 1W groups trading days by
     ISO week (labelled at Monday Asia/Taipei midnight). Trading days without 1m bars
-    fall back to stored ``1D`` session rows imported from the TAIFEX daily report
-    (``app.services.taifex_history``), which reach back years before the 1m history.
+    fall back to stored ``1D`` session rows (``source=taifex``): collected every
+    morning from the TAIFEX OpenAPI ``DailyMarketReportFut``
+    (``app.services.taifex_daily_openapi``) and, for older years, imported manually
+    from the TAIFEX website daily report (``app.services.taifex_history``). Missing
+    1m minutes are backfilled with ``source=taifex`` bars from the OpenAPI
+    ``TimeAndSalesData`` or the website tick ZIP (``app.services.taifex_tick_backfill``).
 
 Continuous codes use the front month without price adjustment
 (``ROLL_METHOD = "front_month_unadjusted"``): each instant reads the contract that was

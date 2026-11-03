@@ -210,6 +210,34 @@ class TWKlineRepository:
         value = (row or {}).get("earliest")
         return _unix(value) if value is not None else None
 
+    def latest_bar_time(
+        self,
+        *,
+        market: str,
+        session: str,
+        timeframe: str,
+        source: str,
+        since: Optional[datetime] = None,
+    ) -> Optional[int]:
+        """Latest ``bar_time`` of any symbol for one session, timeframe and source.
+
+        ``since`` bounds the scan to recent bars; None when nothing matches.
+        """
+        from app.utils.db import get_db_connection
+
+        clauses = "market = ? AND session = ? AND timeframe = ? AND source = ?"
+        params: List[Any] = [market, session, timeframe, source]
+        if since is not None:
+            clauses += " AND bar_time >= ?"
+            params.append(since)
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(f"SELECT MAX(bar_time) AS latest FROM qd_tw_klines WHERE {clauses}", tuple(params))
+            row = cur.fetchone()
+            cur.close()
+        value = (row or {}).get("latest")
+        return _unix(value) if value is not None else None
+
     # ------------------------------------------------------------------ status
     def load_statuses(self, since: date) -> Dict[StatusKey, str]:
         from app.utils.db import get_db_connection

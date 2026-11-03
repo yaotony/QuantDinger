@@ -129,6 +129,17 @@ python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
 - **逐筆檔 → `timeframe=1m`：** 依分鐘彙總；成交數量(B+S) 是買賣雙邊合計，口數為數量除以 2。盤別依該分鐘
   判斷（日盤 08:30-14:00、夜盤 14:50-05:10）。檔案可以是 Big5 或 UTF-8。
 - **可重跑：** 所有寫入都是 upsert，已有 `source=fubon` 的 K 棒不會被覆蓋。
+- **分工：** 期交所 OpenAPI 只提供最新一個交易日，由下面兩個 Celery Beat 排程每天自動收集；
+  這支腳本保留網頁下載，用來手動匯入 OpenAPI 範圍以外的歷史（多年日 K、較早日子的逐筆檔）。
+- **每日日 K：** `quantdinger.tasks.taifex_daily_collect`（maintenance queue，每
+  `TAIFEX_DAILY_COLLECT_INTERVAL_SEC` 秒，預設 1800 秒）讀期交所 OpenAPI `DailyMarketReportFut`，
+  把 `TAIFEX_DAILY_COLLECT_PRODUCTS`（預設 `TX,MTX`）存成 `source=taifex` 的 1D K 棒。報表約在交易日
+  隔天清晨 06:35 公布，台北時間 `TAIFEX_DAILY_COLLECT_NOT_BEFORE`（預設 `07:30`）之前不執行；最近 5 個
+  交易日都收齊後每次只查一次狀態表。每天的結果以 symbol `TAIFEX_DAILY` 記在
+  `qd_tw_kline_collect_status`；OpenAPI 已換成下一天、沒收到的日子記為 `missed`，要用 `--daily` 補。
+  有待收日子的那幾次執行完會比對 `qd_tw_klines` 中 `source=taifex` 日盤 1D 的最新交易日與 XTAI 日曆
+  應有的最新交易日，落後時記 `TAIFEX daily bars are stale` warning。
+  `TAIFEX_DAILY_COLLECT_ENABLED=false` 可關閉；`FUBON_SIDECAR_TOKEN` 為空時自動略過。
 - **每日補缺口：** `quantdinger.tasks.taifex_tick_backfill`（maintenance queue，每
   `TAIFEX_TICK_BACKFILL_INTERVAL_SEC` 秒，預設 3600 秒）匯入今天以前最近 5 個交易日的逐筆成交
   （商品依 `TAIFEX_TICK_BACKFILL_PRODUCTS`，預設 `TX,MTX`），補上富邦累積漏掉的分鐘。期交所 OpenAPI
@@ -143,7 +154,7 @@ python scripts/import_taifex_history.py --tick-days 2026-10-29,2026-10-30
 
 | 週期 | 資料來源 | 最早可到 |
 |---|---|---|
-| `1D`、`1W` | 有 1 分 K 的日子用 1 分 K，其餘用匯入的日 K | `--daily --from` 的日期（期交所每日行情可回溯多年） |
+| `1D`、`1W` | 有 1 分 K 的日子用 1 分 K，其餘用期交所日 K（匯入或每日收集） | `--daily --from` 的日期（期交所每日行情可回溯多年） |
 | `1m` … `4H` | 只用已存的 1 分 K（富邦累積 + 期交所逐筆檔） | 第一次匯入逐筆檔往前約 30 個交易日，之後連續 |
 
 連續代碼（`TXF`）每天從已存的合約中取當時的近月，所以要匯入曾經是近月的每個月份（每日行情本身就包含所有

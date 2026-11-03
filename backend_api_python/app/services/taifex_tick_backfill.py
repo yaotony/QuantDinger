@@ -4,7 +4,9 @@ The Fubon collector (``tw_kline_collector``) misses minutes whenever the sidecar
 is disconnected. A Celery Beat tick (``quantdinger.tasks.taifex_tick_backfill``)
 stores every trade of each recent trading day before today as ``source=taifex``
 1m bars. The upsert never replaces ``source=fubon`` bars, so only the missing
-minutes are added.
+minutes are added. Daily bars are collected separately from the OpenAPI
+``DailyMarketReportFut`` (``app.services.taifex_daily_openapi``); older history
+is a manual import (``scripts/import_taifex_history.py``).
 
 Sources, chosen per trading day
 -------------------------------

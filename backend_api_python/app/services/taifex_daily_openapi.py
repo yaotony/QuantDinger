@@ -33,11 +33,24 @@ Bars are written through ``TWKlineRepository.upsert_bars`` with
 report date's outcome is recorded in ``qd_tw_kline_collect_status`` under
 ``(TWFutures, TAIFEX_DAILY, all, day)``. The status symbol is not a contract
 code so it never collides with the Fubon 1m collection status of a contract.
+
+Scheduling: the Celery Beat entry ``taifex-daily-collect``
+(``quantdinger.tasks.taifex_daily_collect``, maintenance queue) calls
+:func:`run_scheduled_daily_collect` every ``TAIFEX_DAILY_COLLECT_INTERVAL_SEC``
+(default 1800 s). It does nothing before ``TAIFEX_DAILY_COLLECT_NOT_BEFORE``
+(default 07:30 Asia/Taipei; the report is published at about 06:35-06:40) and
+costs one status query once every expected day is collected, so the interval
+doubles as the retry cadence while a report is late. After a run that had
+pending days, :func:`check_freshness` compares the latest ``source=taifex`` 1D
+day-session bar in ``qd_tw_klines`` with the latest due XTAI trading day and
+logs a warning when it is behind; the per-day outcome stays in
+``qd_tw_kline_collect_status``.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.data_sources.tw_futures_contracts import (
@@ -314,4 +327,119 @@ def run_taifex_daily_collect(
             "TAIFEX daily collection: %d collected, %d failed, %d missed",
             len(result.get("collected") or []), len(result.get("failed") or []), len(result.get("missed") or []),
         )
+    return result
+
+
+# --------------------------------------------------------------------------- schedule
+ENABLED_ENV = "TAIFEX_DAILY_COLLECT_ENABLED"
+PRODUCTS_ENV = "TAIFEX_DAILY_COLLECT_PRODUCTS"
+NOT_BEFORE_ENV = "TAIFEX_DAILY_COLLECT_NOT_BEFORE"
+# The report of trading day D is published at about 06:35-06:40 Asia/Taipei on
+# the next morning (see app.services.taifex_openapi); start an hour later.
+DEFAULT_NOT_BEFORE = dtime(7, 30)
+# How far back the freshness query scans ``qd_tw_klines``.
+FRESHNESS_SCAN_DAYS = 45
+
+
+def _enabled() -> bool:
+    return os.getenv(ENABLED_ENV, "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def configured_products(raw: Optional[str] = None) -> List[str]:
+    text = os.getenv(PRODUCTS_ENV, ",".join(DEFAULT_PRODUCTS)) if raw is None else raw
+    return parse_products(text)
+
+
+def configured_not_before(raw: Optional[str] = None) -> dtime:
+    """``TAIFEX_DAILY_COLLECT_NOT_BEFORE`` (``HH:MM`` Asia/Taipei); invalid values use 07:30."""
+    text = (os.getenv(NOT_BEFORE_ENV, "") if raw is None else raw).strip()
+    if not text:
+        return DEFAULT_NOT_BEFORE
+    try:
+        return dtime.fromisoformat(text)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %s", NOT_BEFORE_ENV, text, DEFAULT_NOT_BEFORE.strftime("%H:%M"))
+        return DEFAULT_NOT_BEFORE
+
+
+def check_freshness(
+    repository: Any,
+    now: Optional[datetime] = None,
+    *,
+    is_trading_day: Optional[TradingDayCheck] = None,
+) -> Dict[str, Any]:
+    """Compare the latest ``source=taifex`` 1D day-session bar with the latest due trading day.
+
+    The due day is the most recent XTAI trading day before today (its report is
+    published the next morning). Only ``regular`` bars are compared because an
+    after-hours bar is labelled with the following trading day. A stale result
+    is logged as a warning.
+    """
+    check = is_trading_day or xtai_is_trading_day
+    moment = (now or datetime.now(timezone.utc)).astimezone(TAIPEI_TZ)
+    today = moment.date()
+    due = expected_days(today, check, 1)
+    expected = due[-1] if due else None
+    latest_ts = repository.latest_bar_time(
+        market=MARKET_FUTURES, session=SESSION_REGULAR, timeframe=TIMEFRAME_DAILY, source=SOURCE_TAIFEX,
+        since=moment - timedelta(days=FRESHNESS_SCAN_DAYS),
+    )
+    latest = datetime.fromtimestamp(latest_ts, TAIPEI_TZ).date() if latest_ts is not None else None
+    lag = 0
+    if expected is not None and (latest is None or latest < expected):
+        # Due trading days after ``latest`` (bounded by the scan window when nothing is stored).
+        floor = latest or today - timedelta(days=FRESHNESS_SCAN_DAYS)
+        cursor = expected
+        while cursor > floor:
+            lag += int(bool(check(cursor)))
+            cursor -= timedelta(days=1)
+    stale = lag > 0
+    out: Dict[str, Any] = {
+        "latest": latest.isoformat() if latest else None,
+        "expected": expected.isoformat() if expected else None,
+        "lag_trading_days": lag,
+        "stale": stale,
+    }
+    if stale:
+        logger.warning(
+            "TAIFEX daily bars are stale: latest source=taifex 1D bar %s, expected %s (%d trading day(s) behind)",
+            out["latest"] or "none", out["expected"], lag,
+        )
+    return out
+
+
+def run_scheduled_daily_collect(now: Optional[datetime] = None, **kwargs: Any) -> Dict[str, Any]:
+    """Celery Beat entry point: collect after the morning publication, then check freshness.
+
+    Skipped when ``TAIFEX_DAILY_COLLECT_ENABLED`` is off, while the Fubon sidecar
+    (the ``TWFutures`` market) is not configured, and before
+    ``TAIFEX_DAILY_COLLECT_NOT_BEFORE`` Asia/Taipei.
+    """
+    if not _enabled():
+        return {"skipped": f"{ENABLED_ENV} is off"}
+    from app.config.data_sources import FubonSidecarConfig
+
+    if not FubonSidecarConfig.CONFIGURED:
+        return {"skipped": "Fubon sidecar is not configured"}
+    moment = (now or datetime.now(timezone.utc)).astimezone(TAIPEI_TZ)
+    not_before = configured_not_before()
+    if moment.time() < not_before:
+        return {"skipped": f"before {not_before.strftime('%H:%M')} Asia/Taipei"}
+
+    if kwargs.get("repository") is None:
+        from app.services.tw_kline_store import TWKlineRepository
+
+        kwargs["repository"] = TWKlineRepository()
+    kwargs.setdefault("products", configured_products())
+    result = run_taifex_daily_collect(moment, **kwargs)
+    # Every expected day is already success/missed: nothing changed since the last check.
+    if result.get("skipped"):
+        return result
+    try:
+        result["freshness"] = check_freshness(
+            kwargs["repository"], moment, is_trading_day=kwargs.get("is_trading_day"),
+        )
+    except Exception as exc:  # the collection itself already succeeded or recorded its status
+        logger.warning("TAIFEX daily freshness check failed: %s", exc)
+        result["freshness"] = {"error": str(exc)[:300]}
     return result

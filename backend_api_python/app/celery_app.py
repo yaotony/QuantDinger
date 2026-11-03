@@ -58,6 +58,7 @@ celery_app.conf.update(
         "quantdinger.tasks.ai_calibration": {"queue": "maintenance"},
         "quantdinger.tasks.market_catalog_sync": {"queue": "maintenance"},
         "quantdinger.tasks.tw_kline_collect": {"queue": "maintenance"},
+        "quantdinger.tasks.taifex_daily_collect": {"queue": "maintenance"},
         "quantdinger.tasks.taifex_tick_backfill": {"queue": "maintenance"},
         "quantdinger.tasks.fundamental_sync_tick": {"queue": "maintenance"},
         "quantdinger.tasks.worker_heartbeat": {"queue": "maintenance"},
@@ -87,6 +88,12 @@ celery_app.conf.update(
         "tw-kline-collect": {
             "task": "quantdinger.tasks.tw_kline_collect",
             "schedule": max(300, int(os.getenv("TW_KLINE_COLLECT_INTERVAL_SEC", "600"))),
+        },
+        # Interval tick; the task itself waits for TAIFEX_DAILY_COLLECT_NOT_BEFORE
+        # (Asia/Taipei) so the schedule does not depend on the Celery timezone.
+        "taifex-daily-collect": {
+            "task": "quantdinger.tasks.taifex_daily_collect",
+            "schedule": max(300, int(os.getenv("TAIFEX_DAILY_COLLECT_INTERVAL_SEC", "1800"))),
         },
         "taifex-tick-backfill": {
             "task": "quantdinger.tasks.taifex_tick_backfill",
