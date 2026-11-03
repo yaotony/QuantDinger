@@ -85,7 +85,8 @@ class ChunkFeed:
     def total_chunks(self) -> int:
         return -(-len(self.payload) // self.chunk_size)
 
-    def __call__(self, method: str, url: str) -> RawResponse:
+    def __call__(self, method: str, url: str, headers=None) -> RawResponse:
+        # Ignores Range like a server answering 200: the probe must stop reading early.
         self.requests.append(method)
 
         def chunks():
@@ -223,6 +224,7 @@ def test_probe_reads_only_the_first_row_and_closes_the_stream():
     assert feed.chunks_read < feed.total_chunks // 4
     assert feed.closed == 1
     assert backfill.served_trading_day(probe.first_row, weekdays()) == date(2026, 10, 30)
+    assert client.probe("TimeAndSalesData", is_trading_day=weekdays()).trading_day == date(2026, 10, 30)
 
 
 def test_probe_of_an_empty_response():
