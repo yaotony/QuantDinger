@@ -208,7 +208,7 @@ def session_bar_range(market: str, session: str, day: date) -> Tuple[int, int]:
 
 
 def xtai_sessions(start: date, end: date) -> List[date]:
-    """XTAI trading days in [start, end] (``exchange_calendars``)."""
+    """XTAI trading days in [start, end] (``exchange_calendars`` minus unscheduled closures)."""
     from app.services.market_schedule import _calendar
 
     calendar = _calendar(MARKET_STOCK)

@@ -303,6 +303,130 @@ class TWKlineRepository:
             db.commit()
             cur.close()
 
+    # ------------------------------------------------------------------ maintenance
+    def find_bars_at(self, *, market: str, timeframe: str, bar_times: Sequence[int]) -> List[Dict[str, Any]]:
+        """Every stored bar of ``market`` / ``timeframe`` opening at one of ``bar_times``."""
+        from app.utils.db import get_db_connection
+
+        instants = sorted({int(ts) for ts in bar_times})
+        if not instants:
+            return []
+        placeholders = ", ".join("?" for _ in instants)
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                f"""
+                SELECT market, symbol, session, timeframe, bar_time, open, high, low, close, volume, source
+                FROM qd_tw_klines
+                WHERE market = ? AND timeframe = ? AND bar_time IN ({placeholders})
+                ORDER BY bar_time, symbol, session
+                """,
+                (market, timeframe, *[_utc_datetime(ts) for ts in instants]),
+            )
+            rows = cur.fetchall() or []
+            cur.close()
+        return [
+            {
+                "market": str(row["market"]),
+                "symbol": str(row["symbol"]),
+                "session": str(row["session"]),
+                "timeframe": str(row["timeframe"]),
+                "time": _unix(row["bar_time"]),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row["volume"] or 0),
+                "source": str(row["source"]),
+            }
+            for row in rows
+        ]
+
+    def delete_bars(self, keys: Iterable[Tuple[str, str, str, str, int]]) -> int:
+        """Delete bars by ``(market, symbol, session, timeframe, bar_time)``; returns the keys given."""
+        from app.utils.db import get_db_connection
+
+        rows = [(m, s, sess, tf, _utc_datetime(ts)) for m, s, sess, tf, ts in keys]
+        if not rows:
+            return 0
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.executemany(
+                """
+                DELETE FROM qd_tw_klines
+                WHERE market = ? AND symbol = ? AND session = ? AND timeframe = ? AND bar_time = ?
+                """,
+                rows,
+            )
+            db.commit()
+            cur.close()
+        return len(rows)
+
+    def find_statuses(self, *, trade_dates: Sequence[date], status: str) -> List[Dict[str, Any]]:
+        """Collection status rows with ``status`` on any of ``trade_dates``."""
+        from app.utils.db import get_db_connection
+
+        days = sorted(set(trade_dates))
+        if not days:
+            return []
+        placeholders = ", ".join("?" for _ in days)
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                f"""
+                SELECT market, symbol, session, trade_date, status, attempts, last_error
+                FROM qd_tw_kline_collect_status
+                WHERE status = ? AND trade_date IN ({placeholders})
+                ORDER BY trade_date, market, symbol, session
+                """,
+                (status, *days),
+            )
+            rows = cur.fetchall() or []
+            cur.close()
+        return [
+            {
+                "market": str(row["market"]),
+                "symbol": str(row["symbol"]),
+                "session": str(row["session"]),
+                "trade_date": _as_date(row["trade_date"]),
+                "status": str(row["status"]),
+                "attempts": int(row["attempts"] or 0),
+                "last_error": str(row["last_error"] or ""),
+            }
+            for row in rows
+        ]
+
+    def mark_statuses(
+        self,
+        keys: Iterable[StatusKey],
+        *,
+        from_status: str,
+        to_status: str,
+        note: str,
+    ) -> int:
+        """Move status rows still at ``from_status`` to ``to_status`` with ``note`` as the error."""
+        from app.utils.db import get_db_connection
+
+        rows = [
+            (to_status, str(note or "")[:_MAX_ERROR_CHARS], market, symbol, session, trade_date, from_status)
+            for market, symbol, session, trade_date in keys
+        ]
+        if not rows:
+            return 0
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.executemany(
+                """
+                UPDATE qd_tw_kline_collect_status
+                SET status = ?, last_error = ?, updated_at = NOW()
+                WHERE market = ? AND symbol = ? AND session = ? AND trade_date = ? AND status = ?
+                """,
+                rows,
+            )
+            db.commit()
+            cur.close()
+        return len(rows)
+
     # ------------------------------------------------------------------ watchlist
     def watchlist_symbols(self) -> List[Tuple[str, str]]:
         """Distinct Taiwan (market, symbol) pairs on any watchlist.
