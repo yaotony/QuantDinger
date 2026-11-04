@@ -82,6 +82,12 @@ $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=regular'
 $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=afterhours'
 ```
 
+The account center can also show the connection status: the backend endpoint
+`GET /api/fubon/status` (login required, read-only, cached for 15 seconds) reports `configured`,
+`connected`, `logged_in`, `realtime_ready` and `sdk_version`, plus an `error` code such as
+`sidecarUnreachable` or `sidecarUnauthorized` when the sidecar cannot be reached. It never
+returns credentials, the token or certificate paths, and Fubon stays out of the trading venue list.
+
 ## 6. Daily K-line accumulation
 
 Fubon keeps stock minute bars for the latest 5 trading days and futures minute bars for the

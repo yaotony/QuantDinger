@@ -768,6 +768,8 @@ tags:
   description: Interactive Brokers adapter (Internal)
 - name: Alpaca
   description: Alpaca adapter (Internal)
+- name: Fubon
+  description: Fubon market data sidecar status, read-only (Internal)
 servers:
 - url: http://localhost:5000
   description: Backend direct (python run.py)
@@ -7114,6 +7116,26 @@ paths:
       schema:
         type: string
         minLength: 1
+  /api/fubon/status:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Get the Fubon market data sidecar connection status.
+      tags:
+      - Fubon
+      operationId: getApiFubonStatus
+      x-visibility: internal
   /api/{broker}/accounts:
     get:
       responses:
