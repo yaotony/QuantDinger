@@ -75,6 +75,11 @@ $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=regular'
 $P '/v1/futopt/intraday/candles?symbol=TXFL6&timeframe=1&session=afterhours'
 ```
 
+帳戶中心也可查看連線狀態：後端端點 `GET /api/fubon/status`（需登入、唯讀、快取 15 秒）回傳
+`configured`、`connected`、`logged_in`、`realtime_ready` 與 `sdk_version`；sidecar 連不上時另附
+`sidecarUnreachable`、`sidecarUnauthorized` 等 `error` 機器碼。回應不含帳密、token 或憑證路徑，
+富邦也不會出現在下單 venue 清單。
+
 ## 6. 每日 K 線累積
 
 富邦的股票分 K 只保留近 5 個交易日、期貨分 K 只有當盤。因此後端的 `celery-beat` 會排程
